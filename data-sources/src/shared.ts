@@ -6,8 +6,15 @@ import {
   rpc, nativeToScVal, scValToNative, Address, Keypair,
 } from "@stellar/stellar-sdk";
 import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
-dotenv.config();
+// Load .env from the project root regardless of CWD.
+// When run via npm workspace (npm run dev --workspace=data-sources),
+// CWD is data-sources/, not the project root.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenv.config({ path: resolve(__dirname, "../../.env") });
 
 // ---------------------------------------------------------------------------
 // Env helpers — no secrets in error messages

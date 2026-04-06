@@ -12,7 +12,7 @@
     "build": "tsc --noEmit",
     "build:contracts": "cd contracts/wallet-policy && stellar contract build && cd ../trust-registry && stellar contract build",
     "dev": "concurrently -n engine,sources,dashboard,mcp \"npm run dev:engine\" \"npm run dev:sources\" \"npm run dev:dashboard\" \"npm run dev:mcp\"",
-    "dev:engine": "tsx --watch src/autopay.ts",
+    "dev:engine": "tsx src/ws-server.ts",
     "dev:sources": "npm run dev --workspace=data-sources",
     "dev:dashboard": "npm run dev --workspace=dashboard",
     "dev:mcp": "npm run dev --workspace=mcp-server",

@@ -1,7 +1,13 @@
 import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { Keypair } from "@stellar/stellar-sdk";
 
-dotenv.config();
+// Load .env from project root regardless of CWD.
+// When run via npm workspace, CWD may be a subdirectory.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenv.config({ path: resolve(__dirname, "../.env") });
 
 // ---------------------------------------------------------------------------
 // Env helpers
