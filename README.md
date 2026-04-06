@@ -56,14 +56,12 @@ graph TD
 
 ## Quick start
 
-The Soroban contracts are already deployed on Stellar testnet. You only need a wallet and USDC.
-
 ```bash
 # 1. Install
 git clone <repo> && cd x402-autopilot
 npm install --legacy-peer-deps
 
-# 2. Copy env template (contract IDs are pre-filled)
+# 2. Copy env template
 cp .env.example .env
 
 # 3. Generate a Stellar testnet keypair
@@ -80,17 +78,20 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address agent)"
 # 6. Get OZ API key
 #    Go to https://channels.openzeppelin.com/testnet/gen, copy the key
 
-# 7. Fill in .env with your wallet keys and OZ API key
-#    Contract IDs and USDC SAC are already set. Just add:
-#    STELLAR_PRIVATE_KEY, STELLAR_PUBLIC_KEY, OZ_API_KEY
-#    Set all 3 API wallets to your public key for the demo.
+# 7. Deploy your wallet-policy contract (you need your own, see note below)
+npm run deploy:wallet-policy
+#    Copy the contract ID from the output into .env
 
-# 8. Seed the trust registry with demo services
-npm run seed:registry
+# 8. Fill in .env: STELLAR_PRIVATE_KEY, STELLAR_PUBLIC_KEY, OZ_API_KEY,
+#    WALLET_POLICY_CONTRACT_ID (from step 7).
+#    Set all 3 API wallets to your public key for the demo.
+#    The trust-registry and USDC SAC IDs are pre-filled.
 
 # 9. Start everything
 npm run dev
 ```
+
+**Why you need your own wallet-policy:** The wallet-policy contract uses owner auth for spending operations (record_spend, update_policy, set_allowlist). Only the deployer's key can call these. The trust-registry is shared and public: anyone can register services, report quality, and read.
 
 ## MCP configuration
 
@@ -216,25 +217,17 @@ Tradeoffs: testnet Soroban transactions take 5-15 seconds to confirm. The mutex 
 - Multi-chain support (EVM chains via x402, Stellar via MPP)
 - Agent-to-agent payments (one autopilot pays another autopilot's API)
 
-## Pre-deployed contracts
+## Contracts on testnet
 
-The Soroban contracts are live on Stellar testnet. You do not need to deploy them yourself.
+Each user deploys their own **wallet-policy** (spending limits are personal). The **trust-registry** is shared (a public service directory).
 
-| Contract | ID | Explorer |
-|----------|-----|---------|
-| wallet-policy | `CBAGPVWVGGLSYT5Y6OA3I2SAAG3TYAWJDL7VEMWMVTJYBPASODZQDPGL` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBAGPVWVGGLSYT5Y6OA3I2SAAG3TYAWJDL7VEMWMVTJYBPASODZQDPGL) |
-| trust-registry | `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM) |
-| USDC SAC | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
+| Contract | Ownership | Deploy |
+|----------|-----------|--------|
+| wallet-policy | Per-user (owner auth on spend/policy) | `npm run deploy:wallet-policy` (required) |
+| trust-registry | Shared (anyone reads/registers) | Pre-deployed: `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` |
+| USDC SAC | Stellar system contract | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
 
-### Redeploying contracts (optional)
-
-Only needed if you want your own contract instances:
-
-```bash
-npm run deploy:wallet-policy
-npm run deploy:trust-registry
-# Update WALLET_POLICY_CONTRACT_ID and TRUST_REGISTRY_CONTRACT_ID in .env
-```
+To deploy your own trust-registry (optional): `npm run deploy:trust-registry`
 
 ## Documentation
 

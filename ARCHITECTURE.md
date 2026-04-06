@@ -204,16 +204,16 @@ sequenceDiagram
     AP->>AP: response.text(), recordSpend, emit event
 ```
 
-## Soroban contracts (pre-deployed)
+## Soroban contracts
 
-Both contracts are deployed on Stellar testnet and ready to use:
+| Contract | Ownership | Deploy | Functions |
+|----------|-----------|--------|-----------|
+| wallet-policy | Per-user (owner auth on writes) | Each user deploys their own | 8 |
+| trust-registry | Shared (public reads, auth on service management) | Pre-deployed: `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` | 8 |
 
-| Contract | Address | Functions |
-|----------|---------|-----------|
-| wallet-policy | `CBAGPVWVGGLSYT5Y6OA3I2SAAG3TYAWJDL7VEMWMVTJYBPASODZQDPGL` | 8 |
-| trust-registry | `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` | 8 |
+The wallet-policy requires `owner.require_auth()` for record_spend, record_denied, update_policy, and set_allowlist. Read functions (check_policy, get_today_spending, get_lifetime_stats) are public. Each user must deploy their own instance.
 
-Users do not need to redeploy. The `.env.example` file has these IDs pre-filled.
+The trust-registry is a shared directory. Anyone can register services (with a USDC deposit), report quality, and read. Service owners control heartbeat and deregister for their own entries.
 
 ## Wallet policy contract
 
