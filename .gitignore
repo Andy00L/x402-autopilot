@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.js
+*.d.ts
+*.js.map
+*.d.ts.map
+!vite.config.ts
+
+# Rust / Soroban
+target/
+*.wasm
+*.d
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dashboard build
+dashboard/dist/
+
+# Reference/build prompts (not part of source)
+REFERENCE_SECURITY_AUDIT.md
+REFERENCE_DOCUMENTATION_AUDIT.md
+BUILD-PROMPTS.md

@@ -1,0 +1,49 @@
+{
+  "name": "x402-autopilot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "mcp-server",
+    "data-sources",
+    "dashboard"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit",
+    "build:contracts": "cd contracts/wallet-policy && stellar contract build && cd ../trust-registry && stellar contract build",
+    "dev": "concurrently -n engine,sources,dashboard,mcp \"npm run dev:engine\" \"npm run dev:sources\" \"npm run dev:dashboard\" \"npm run dev:mcp\"",
+    "dev:engine": "tsx --watch src/autopay.ts",
+    "dev:sources": "npm run dev --workspace=data-sources",
+    "dev:dashboard": "npm run dev --workspace=dashboard",
+    "dev:mcp": "npm run dev --workspace=mcp-server",
+    "setup:testnet": "tsx scripts/setup-testnet.ts",
+    "deploy:wallet-policy": "bash scripts/deploy-wallet-policy.sh",
+    "deploy:trust-registry": "bash scripts/deploy-trust-registry.sh",
+    "seed:registry": "tsx scripts/seed-registry.ts",
+    "demo": "tsx scripts/run-demo.ts",
+    "health": "tsx scripts/health-report.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@stellar/mpp": "latest",
+    "@stellar/stellar-sdk": "^14.5.0",
+    "@x402/core": "latest",
+    "@x402/express": "latest",
+    "@x402/extensions": "latest",
+    "@x402/fetch": "latest",
+    "@x402/stellar": "latest",
+    "concurrently": "^8.2.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.16.0",
+    "express": "^4.21.0",
+    "mppx": "latest",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10"
+  }
+}
