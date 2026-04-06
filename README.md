@@ -56,26 +56,39 @@ graph TD
 
 ## Quick start
 
+The Soroban contracts are already deployed on Stellar testnet. You only need a wallet and USDC.
+
 ```bash
 # 1. Install
 git clone <repo> && cd x402-autopilot
 npm install --legacy-peer-deps
 
-# 2. Setup testnet wallet
-npm run setup:testnet
+# 2. Copy env template (contract IDs are pre-filled)
+cp .env.example .env
 
-# 3. Get USDC from testnet DEX (swap XLM for USDC) or faucet
+# 3. Generate a Stellar testnet keypair
+stellar keys generate agent --network testnet
+stellar keys address agent    # copy as STELLAR_PUBLIC_KEY
+stellar keys show agent       # copy as STELLAR_PRIVATE_KEY
 
-# 4. Deploy contracts
-npm run deploy:wallet-policy
-npm run deploy:trust-registry
+# 4. Fund via Friendbot
+curl "https://friendbot.stellar.org?addr=$(stellar keys address agent)"
 
-# 5. Update .env with contract IDs from step 4
+# 5. Get testnet USDC
+#    Go to https://faucet.circle.com, select Stellar, paste your public key
 
-# 6. Seed the registry with demo services
+# 6. Get OZ API key
+#    Go to https://channels.openzeppelin.com/testnet/gen, copy the key
+
+# 7. Fill in .env with your wallet keys and OZ API key
+#    Contract IDs and USDC SAC are already set. Just add:
+#    STELLAR_PRIVATE_KEY, STELLAR_PUBLIC_KEY, OZ_API_KEY
+#    Set all 3 API wallets to your public key for the demo.
+
+# 8. Seed the trust registry with demo services
 npm run seed:registry
 
-# 7. Start everything
+# 9. Start everything
 npm run dev
 ```
 
@@ -202,6 +215,26 @@ Tradeoffs: testnet Soroban transactions take 5-15 seconds to confirm. The mutex 
 - Mainnet deployment (real USDC, production facilitator)
 - Multi-chain support (EVM chains via x402, Stellar via MPP)
 - Agent-to-agent payments (one autopilot pays another autopilot's API)
+
+## Pre-deployed contracts
+
+The Soroban contracts are live on Stellar testnet. You do not need to deploy them yourself.
+
+| Contract | ID | Explorer |
+|----------|-----|---------|
+| wallet-policy | `CBAGPVWVGGLSYT5Y6OA3I2SAAG3TYAWJDL7VEMWMVTJYBPASODZQDPGL` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBAGPVWVGGLSYT5Y6OA3I2SAAG3TYAWJDL7VEMWMVTJYBPASODZQDPGL) |
+| trust-registry | `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM) |
+| USDC SAC | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
+
+### Redeploying contracts (optional)
+
+Only needed if you want your own contract instances:
+
+```bash
+npm run deploy:wallet-policy
+npm run deploy:trust-registry
+# Update WALLET_POLICY_CONTRACT_ID and TRUST_REGISTRY_CONTRACT_ID in .env
+```
 
 ## Documentation
 

@@ -204,6 +204,17 @@ sequenceDiagram
     AP->>AP: response.text(), recordSpend, emit event
 ```
 
+## Soroban contracts (pre-deployed)
+
+Both contracts are deployed on Stellar testnet and ready to use:
+
+| Contract | Address | Functions |
+|----------|---------|-----------|
+| wallet-policy | `CBAGPVWVGGLSYT5Y6OA3I2SAAG3TYAWJDL7VEMWMVTJYBPASODZQDPGL` | 8 |
+| trust-registry | `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` | 8 |
+
+Users do not need to redeploy. The `.env.example` file has these IDs pre-filled.
+
 ## Wallet policy contract
 
 On-chain source of truth for spending limits. All money amounts are i128 (stroops).
