@@ -21,7 +21,7 @@ target/
 
 # Claude Code
 .claude/
-
+CLAUDE.md
 # IDE
 .vscode/
 .idea/
@@ -44,3 +44,4 @@ dashboard/dist/
 REFERENCE_SECURITY_AUDIT.md
 REFERENCE_DOCUMENTATION_AUDIT.md
 BUILD-PROMPTS.md
+CLAUDE.md
