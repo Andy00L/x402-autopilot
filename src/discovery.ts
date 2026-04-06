@@ -16,10 +16,6 @@ interface CacheEntry {
 const TTL_MS = 2 * 60 * 1_000; // 2 minutes
 const cache = new Map<string, CacheEntry>();
 
-function cacheKey(capability: string): string {
-  return capability;
-}
-
 function getCached(key: string): ServiceInfo[] | null {
   const entry = cache.get(key);
   if (!entry) return null;
@@ -41,7 +37,7 @@ export function invalidateService(url: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Bazaar client
+// Bazaar client (Tier 1)
 // ---------------------------------------------------------------------------
 
 const facilitatorClient = new HTTPFacilitatorClient({
@@ -53,14 +49,101 @@ const facilitatorClient = new HTTPFacilitatorClient({
 });
 
 // ---------------------------------------------------------------------------
-// 3-tier discovery: Bazaar → Trust Registry → Cache merge
+// xlm402.com catalog (Tier 3) — external x402 services on Stellar
+// ---------------------------------------------------------------------------
+
+const XLM402_CATALOG_URL = "https://xlm402.com/api/catalog";
+const XLM402_BASE_URL = "https://xlm402.com";
+
+/** Map xlm402 service IDs to our capability names. */
+function mapXlm402Capability(service: string): string {
+  const mapping: Record<string, string> = {
+    weather: "weather",
+    news: "news",
+    crypto: "blockchain",
+    scrape: "scraping",
+    collect: "scraping",
+    chat: "chat",
+    image: "image",
+  };
+  return mapping[service] ?? service;
+}
+
+interface Xlm402CacheEntry {
+  services: ServiceInfo[];
+  timestamp: number;
+}
+
+let xlm402Cache: Xlm402CacheEntry | null = null;
+
+async function fetchXlm402Catalog(capability?: string): Promise<ServiceInfo[]> {
+  // Check cache
+  if (xlm402Cache && Date.now() - xlm402Cache.timestamp < TTL_MS) {
+    const cached = xlm402Cache.services;
+    return capability ? cached.filter((s) => s.capability === capability) : cached;
+  }
+
+  try {
+    const response = await fetch(XLM402_CATALOG_URL, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return [];
+
+    const text = await response.text();
+    let catalog: Record<string, unknown>;
+    try {
+      catalog = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return [];
+    }
+
+    const endpoints = catalog.endpoints;
+    if (!Array.isArray(endpoints)) return [];
+
+    const services: ServiceInfo[] = [];
+    for (const ep of endpoints) {
+      if (typeof ep !== "object" || ep === null) continue;
+      const entry = ep as Record<string, unknown>;
+
+      // Only testnet endpoints
+      if (entry.network !== "testnet") continue;
+
+      // Parse price safely
+      const priceUsd = parseFloat(String(entry.price_usd ?? "0"));
+      if (!Number.isFinite(priceUsd) || priceUsd <= 0) continue;
+
+      const path = String(entry.path ?? "");
+      if (!path) continue;
+
+      services.push({
+        serviceId: -1, // Not in on-chain registry
+        name: `xlm402:${String(entry.id ?? entry.service ?? "")}`,
+        url: `${XLM402_BASE_URL}${path}`,
+        capability: mapXlm402Capability(String(entry.service ?? "")),
+        priceStroops: BigInt(Math.round(priceUsd * 10_000_000)),
+        protocol: "x402",
+        score: 70, // Default for unverified external services
+      });
+    }
+
+    xlm402Cache = { services, timestamp: Date.now() };
+    return capability ? services.filter((s) => s.capability === capability) : services;
+  } catch {
+    // xlm402.com down — degrade gracefully, tiers 1 and 2 still work
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3-tier discovery: Bazaar → Trust Registry → xlm402.com → merge
 // ---------------------------------------------------------------------------
 
 /**
  * Discover available paid-API services.
  * Tier 1: x402 Bazaar (centralized index)
  * Tier 2: Soroban Trust Registry (on-chain, filtered by capability)
- * Tier 3: Merge, deduplicate, sort by trust score descending
+ * Tier 3: xlm402.com catalog (external x402 services on Stellar testnet)
+ * Merge: deduplicate by URL (registry wins), sort by trust score descending
  *
  * Returns cached results if within TTL.
  */
@@ -69,7 +152,7 @@ export async function discoverServices(
   minScore: number = 0,
   limit: number = 10,
 ): Promise<ServiceInfo[]> {
-  const key = cacheKey(capability);
+  const key = capability;
   const cached = getCached(key);
   if (cached) return cached;
 
@@ -85,7 +168,7 @@ export async function discoverServices(
       (item) => toBazaarServiceInfo(item as unknown as Record<string, unknown>),
     );
   } catch {
-    // Bazaar down — continue with registry only
+    // Bazaar down — continue with other tiers
   }
 
   // --- Tier 2: Trust Registry (Soroban) — filtered by capability + limit ---
@@ -93,11 +176,22 @@ export async function discoverServices(
   try {
     registryServices = await registryClient.listServices(capability, minScore, limit);
   } catch {
-    // Registry RPC down — use bazaar results with default scores
+    // Registry RPC down — continue with other tiers
   }
 
-  // --- Tier 3: Merge ---
-  const merged = mergeAndSort(bazaarServices, registryServices, minScore);
+  // --- Tier 3: xlm402.com catalog (external services) ---
+  let xlm402Services: ServiceInfo[] = [];
+  try {
+    xlm402Services = await fetchXlm402Catalog(capability);
+  } catch {
+    // xlm402.com down — degrade gracefully
+  }
+
+  // --- Merge: registry first (has on-chain trust score), then bazaar, then xlm402 ---
+  const merged = mergeAndSort(
+    [...registryServices, ...bazaarServices, ...xlm402Services],
+    minScore,
+  );
   cache.set(key, { services: merged, timestamp: Date.now() });
   return merged;
 }
@@ -108,29 +202,23 @@ export async function discoverServices(
 
 function toBazaarServiceInfo(item: Record<string, unknown>): ServiceInfo {
   return {
-    serviceId: -1, // Not in registry
+    serviceId: -1,
     name: String(item.name ?? ""),
     url: String(item.url ?? ""),
     capability: "",
     priceStroops: 0n,
     protocol: "x402",
-    score: 70, // Default score for unverified Bazaar services
+    score: 70,
   };
 }
 
 function mergeAndSort(
-  bazaar: ServiceInfo[],
-  registry: ServiceInfo[],
+  services: ServiceInfo[],
   minScore: number,
 ): ServiceInfo[] {
-  // Index registry services by URL for dedup
+  // Deduplicate by URL — first occurrence wins (registry before xlm402)
   const byUrl = new Map<string, ServiceInfo>();
-  for (const svc of registry) {
-    byUrl.set(svc.url, svc);
-  }
-
-  // Add bazaar services not already in registry
-  for (const svc of bazaar) {
+  for (const svc of services) {
     if (!byUrl.has(svc.url)) {
       byUrl.set(svc.url, svc);
     }

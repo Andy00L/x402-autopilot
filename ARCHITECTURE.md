@@ -2,242 +2,259 @@
 
 ## System overview
 
+x402 Autopilot is an autonomous payment engine for AI agents on Stellar. Claude connects via MCP, discovers paid APIs through a 3-tier pipeline (Bazaar, on-chain trust registry, xlm402.com), pays with USDC micropayments, and tracks spending against on-chain Soroban policy contracts. An analyst agent demonstrates agent-to-agent payments by earning money from the main agent and spending money to buy data from other services.
+
+## Component diagram
+
 ```mermaid
-graph TD
-    subgraph "Interface Layer"
-        CC[Claude Code / MCP Client]
-        DASH[React Dashboard :5173]
+flowchart TD
+    subgraph Interface
+        CC["Claude Desktop"]
+        DASH["React Dashboard :5173"]
     end
 
-    subgraph "MCP Server (464 lines)"
-        MCP[mcp-server/src/index.ts<br>6 tools, stdio transport]
+    subgraph MCP["MCP Server - 453 lines"]
+        MCPS["index.ts<br/>6 tools, stdio transport"]
     end
 
-    subgraph "Core Engine (src/, 1831 lines)"
-        AP[autopay.ts<br>Orchestrator, 250 lines]
-        SEC[security.ts<br>URL validation, SSRF, rate limit]
-        PD[protocol-detector.ts<br>HEAD probe, x402 v2 header parsing]
-        PC[policy-client.ts<br>Soroban RPC for wallet-policy]
-        RC[registry-client.ts<br>Soroban RPC for trust-registry]
-        BT[budget-tracker.ts<br>BigInt local cache]
-        DC[discovery.ts<br>Bazaar + Registry + 2min cache]
-        EB[event-bus.ts<br>WebSocket broadcast]
-        MX[mutex.ts<br>Sequential payment lock]
-        HC[health-checker.ts<br>Periodic HEAD probes]
-        CFG[config.ts<br>Env validation, x402 + mppx clients]
-        TY[types.ts<br>6 error classes, 9 type definitions]
+    subgraph Core["Core Engine - 13 modules, 2156 lines"]
+        AP["autopay.ts<br/>308 lines"]
+        SEC["security.ts<br/>SSRF, rate limit"]
+        PD["protocol-detector.ts<br/>HEAD probe"]
+        PC["policy-client.ts<br/>Soroban RPC"]
+        RC["registry-client.ts<br/>Soroban RPC"]
+        BT["budget-tracker.ts<br/>BigInt cache"]
+        DC["discovery.ts<br/>3-tier pipeline"]
+        EB["event-bus.ts<br/>WebSocket broadcast"]
+        MX["mutex.ts<br/>sequential lock"]
     end
 
-    subgraph "Data Sources"
-        W[Weather API :4001<br>x402, $0.001]
-        N[News API :4002<br>x402, $0.001]
-        S[Stellar Data :4003<br>MPP charge, $0.002]
+    subgraph Sources["Data Sources - 5 files, 702 lines"]
+        W["Weather :4001<br/>x402 $0.001"]
+        N["News :4002<br/>x402 $0.001"]
+        S["Stellar Data :4003<br/>MPP $0.002"]
+        AN["Analyst :4004<br/>x402 $0.005"]
     end
 
-    subgraph "Stellar Testnet"
-        WP[wallet-policy<br>Soroban contract, 8 fn]
-        TR[trust-registry<br>Soroban contract, 7 fn]
-        FAC[OZ Facilitator]
-        SRPC[Soroban RPC]
+    subgraph External["External Services"]
+        XL["xlm402.com<br/>21 testnet endpoints"]
     end
 
-    CC -->|stdio| MCP
-    MCP --> AP
+    subgraph Stellar["Stellar Testnet"]
+        WP["wallet-policy<br/>8 functions"]
+        TR["trust-registry<br/>8 functions"]
+        FAC["OZ Facilitator"]
+    end
+
+    CC -->|stdio| MCPS
+    MCPS --> AP
     AP --> SEC
     AP --> PD
     AP --> PC
     AP --> BT
     AP --> DC
     AP --> MX
-    PC --> SRPC
-    RC --> SRPC
-    PD --> W
-    PD --> N
-    PD --> S
+    PC --> WP
+    RC --> TR
     DC --> FAC
     DC --> RC
+    DC --> XL
+    AP --> W
+    AP --> N
+    AP --> S
+    AP --> AN
+    AP --> XL
+    AN --> W
+    AN --> N
+    AN --> LLM["Claude LLM"]
     AP -->|WebSocket| EB
     EB --> DASH
-    HC --> W
-    HC --> N
-    HC --> S
 ```
 
-## Directory structure
-
-```
-x402-autopilot/
-  CLAUDE.md                     Build specification
-  README.md                     Hackathon submission
-  ARCHITECTURE.md               This file
-  package.json                  Root workspace + scripts
-  tsconfig.json                 Strict, ES2022, NodeNext
-
-  contracts/
-    wallet-policy/
-      Cargo.toml                soroban-sdk 22.0.0
-      src/lib.rs                8 pub fn, 353 lines
-    trust-registry/
-      Cargo.toml                soroban-sdk 22.0.0
-      src/lib.rs                7 pub fn
-
-  src/                          12 modules, 1831 lines total
-    types.ts                    6 error classes, 9 type definitions (149 lines)
-    config.ts                   Env validation, keypair, x402 + mppx clients (126 lines)
-    security.ts                 validateUrl, parsePriceStroops, RateLimiter (117 lines)
-    mutex.ts                    AsyncMutex with 30s timeout (41 lines)
-    event-bus.ts                EventBus + WebSocket broadcast (65 lines)
-    budget-tracker.ts           BigInt local cache, sync from Soroban (88 lines)
-    policy-client.ts            checkPolicy, recordSpend, updatePolicy (316 lines)
-    registry-client.ts          listServices, reportQuality, heartbeat (223 lines)
-    protocol-detector.ts        HEAD probe, x402 v2 + MPP header parsing (201 lines)
-    discovery.ts                Bazaar + Registry + 2min cache (144 lines)
-    health-checker.ts           5-minute interval HEAD probes (111 lines)
-    autopay.ts                  Main orchestrator (250 lines)
-
-  mcp-server/src/
-    index.ts                    6 tools, Server + StdioServerTransport (464 lines)
-
-  data-sources/src/
-    shared.ts                   x402 server factory, self-registration helper
-    weather-api.ts              Express + paymentMiddleware, port 4001
-    news-api.ts                 Express + paymentMiddleware, port 4002
-    stellar-data-api.ts         Express + mppx/express, port 4003
-
-  dashboard/src/
-    main.tsx                    React root
-    App.tsx                     5 panels, dark theme (543 lines)
-    hooks/useWebSocket.ts       useReducer, auto-reconnect, backoff (140 lines)
-
-  scripts/
-    setup-testnet.ts            Fund wallet, add USDC trustline
-    deploy-wallet-policy.sh     Build + deploy + initialize
-    deploy-trust-registry.sh    Build + deploy + initialize
-    seed-registry.ts            Register 3 demo services
-    run-demo.ts                 Full demo flow (recordable)
-    health-report.ts            CLI health check table
-
-  skill/
-    SKILL.md                    OpenClaw skill definition
-```
-
-Total: 26 TypeScript/TSX files, 2 Rust contract files, 2 shell scripts.
-
-## Payment flow (x402)
+## Payment flow: x402
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Claude Code
+    participant Agent as Claude Desktop
     participant MCP as MCP Server
     participant AP as autopay.ts
     participant PD as Protocol Detector
     participant PC as Policy Client
     participant API as Weather API :4001
     participant FAC as OZ Facilitator
-    participant WP as Wallet Policy Contract
+    participant WP as Wallet Policy
 
     Agent->>MCP: autopilot_pay_and_fetch(url)
     MCP->>AP: autopilotFetch(url)
-    AP->>AP: validateUrl (SSRF check)
-    AP->>AP: mutex.acquire()
+    AP->>AP: validateUrl - SSRF check
+    AP->>AP: mutex.acquire
     AP->>PD: detect(url)
     PD->>API: HEAD /weather
-    API-->>PD: 402 + PAYMENT-REQUIRED (base64 JSON)
-    PD->>PD: parseX402V2Header (decode base64)
-    PD-->>AP: { protocol: "x402", price: "10000", payTo: "G..." }
+    API-->>PD: 402 + PAYMENT-REQUIRED base64
+    PD->>PD: parseX402V2Header
+    PD-->>AP: protocol x402, price 10000, payTo G...
 
-    AP->>AP: parsePriceStroops("10000") = 10000n
-    AP->>AP: budgetTracker.checkLocal(10000n)
+    AP->>AP: parsePriceStroops = 10000n
+    AP->>AP: budgetTracker.checkLocal
     AP->>PC: checkPolicy(10000n, recipient)
-    PC->>WP: simulateTransaction(check_policy)
-    WP-->>PC: { allowed: true, remaining: 4990000n }
+    PC->>WP: simulateTransaction
+    WP-->>PC: allowed, remaining 4990000n
     PC-->>AP: allowed
 
-    AP->>API: x402Fetch(url) via @x402/fetch
-    Note over AP,FAC: x402 SDK handles payment negotiation via OZ facilitator
+    AP->>API: x402Fetch via @x402/fetch
+    Note over AP,FAC: SDK handles payment via facilitator
     API-->>AP: 200 + weather data
 
-    AP->>AP: response.text() (read ONCE)
-    AP->>AP: nonce = truncate to 32 chars
+    AP->>AP: response.text - read ONCE
     AP->>PC: recordSpend(nonce, 10000n, recipient, txHash)
-    PC->>WP: invokeContract(record_spend)
-    WP-->>PC: confirmed
-
-    AP->>AP: budgetTracker.recordLocal(10000n)
-    AP->>AP: eventBus.emit("spend:ok")
-    AP->>AP: mutex.release()
-    AP-->>MCP: { data, cost: 10000n, protocol: "x402" }
+    PC->>WP: invokeContract
+    AP->>AP: budgetTracker.recordLocal
+    AP->>AP: eventBus.emit spend ok
+    AP->>AP: mutex.release
+    AP-->>MCP: data + cost + protocol
     MCP-->>Agent: JSON result + budget
 ```
 
-## Payment flow (MPP charge)
-
-The MPP path uses the mppx SDK client. `Mppx.create({ polyfill: false })` returns a scoped `.fetch()` that handles the full 402 challenge-response-credential cycle without polyfilling globalThis.fetch. This coexists cleanly with the x402 fetch wrapper.
+## Payment flow: MPP charge
 
 ```mermaid
 sequenceDiagram
     participant AP as autopay.ts
     participant PD as Protocol Detector
-    participant MPP as mppFetch (mppx SDK)
+    participant MPP as mppFetch
     participant API as Stellar Data :4003
     participant RPC as Soroban RPC
 
     AP->>PD: detect(url)
     PD->>API: HEAD /stellar-stats
-    API-->>PD: 402 + WWW-Authenticate: Payment
-    PD->>PD: decode base64url request param
-    PD-->>AP: { protocol: "mpp", price: "20000", recipient: "G..." }
+    API-->>PD: 402 + WWW-Authenticate Payment
+    PD-->>AP: protocol mpp, price 20000
 
-    AP->>AP: policy check + budget check (same as x402)
+    AP->>AP: policy check + budget check
 
     AP->>MPP: mppFetch(url)
-    Note over MPP,API: SDK handles internally:
     MPP->>API: GET /stellar-stats
     API-->>MPP: 402 + challenge
-    MPP->>MPP: Build credential (signed SAC transfer XDR)
+    MPP->>MPP: Build credential with signed SAC transfer
     MPP->>RPC: Prepare + broadcast transaction
     RPC-->>MPP: TX confirmed
-    MPP->>API: GET /stellar-stats + Authorization: Payment (credential)
-    API-->>MPP: 200 + stellar data + Payment-Receipt
-    MPP-->>AP: Response (200)
+    MPP->>API: GET + Authorization Payment credential
+    API-->>MPP: 200 + stellar data + receipt
+    MPP-->>AP: Response 200
 
-    AP->>AP: response.text(), recordSpend, emit event
+    AP->>AP: recordSpend, emit event
 ```
 
-## Soroban contracts
+## Payment flow: agent-to-agent
 
-| Contract | Ownership | Deploy | Functions |
-|----------|-----------|--------|-----------|
-| wallet-policy | Per-user (owner auth on writes) | Each user deploys their own | 8 |
-| trust-registry | Shared (public reads, auth on service management) | Pre-deployed: `CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ` | 8 |
+The analyst agent earns money from the main agent and spends money to buy data from other services. Three wallets, four transactions.
 
-The wallet-policy requires `owner.require_auth()` for record_spend, record_denied, update_policy, and set_allowlist. Read functions (check_policy, get_today_spending, get_lifetime_stats) are public. Each user must deploy their own instance.
+```mermaid
+sequenceDiagram
+    participant Claude as Claude Desktop
+    participant MCP as MCP Server
+    participant AP as autopay.ts
+    participant AN as Analyst :4004
+    participant W as Weather :4001
+    participant N as News :4002
+    participant LLM as Claude LLM
 
-The trust-registry is a shared directory. Anyone can register services (with a USDC deposit), report quality, and read. Service owners control heartbeat and deregister for their own entries.
+    Claude->>MCP: autopilot_pay_and_fetch /analyze
+    MCP->>AP: autopilotFetch localhost:4004/analyze
+    AP->>AP: Policy check + budget check
+    AP->>AN: x402 payment $0.005
+    Note over AP,AN: Main agent wallet pays analyst wallet
+
+    AN->>W: x402 payment $0.001
+    Note over AN,W: Analyst wallet pays weather wallet
+    W-->>AN: Weather data
+
+    AN->>N: x402 payment $0.001
+    Note over AN,N: Analyst wallet pays news wallet
+    N-->>AN: News data
+
+    AN->>LLM: Analyze weather + news data
+    LLM-->>AN: Analysis text
+
+    AN-->>AP: Analysis + economics breakdown
+    Note over AN,AP: Earned $0.005, spent $0.002, profit $0.003
+    AP-->>MCP: Result + cost
+    MCP-->>Claude: Display to user
+```
+
+## Discovery pipeline
+
+Three tiers, deduplicated by URL (registry wins), cached for 2 minutes.
+
+```mermaid
+flowchart LR
+    D["discoverServices<br/>capability, minScore, limit"] --> T1["Tier 1: Bazaar CDP"]
+    D --> T2["Tier 2: Trust Registry<br/>Soroban on-chain"]
+    D --> T3["Tier 3: xlm402.com<br/>21 testnet endpoints"]
+    T1 --> M["Merge + Dedup<br/>by URL"]
+    T2 --> M
+    T3 --> M
+    M --> S["Filter by minScore<br/>Sort by trust score"]
+    S --> C["Cache 2 min"]
+    C --> R["Return"]
+```
+
+| Tier | Source | Speed | Trust |
+|------|--------|-------|-------|
+| 1 | x402 Bazaar CDP | Fast HTTP | Default 70 |
+| 2 | Soroban Trust Registry | 2-3s simulate | On-chain score |
+| 3 | xlm402.com catalog | 1-2s HTTPS | Default 70 |
+
+If any tier is down, the others still work. Discovery degrades but does not fail.
+
+## Trust registry v2 architecture
+
+Services are stored in temporary storage with TTL-based expiry. No manual stale checking needed.
+
+```mermaid
+flowchart TD
+    I["Instance Storage<br/>Admin + UsdcAddr + NextId<br/>~40 bytes, never grows"]
+    T["Temporary Storage<br/>Service per id<br/>auto-expire on TTL 0"]
+    P["Persistent Storage<br/>CapIndex per capability<br/>DepositRecord per id"]
+
+    I -->|"register increments NextId"| T
+    T -->|"heartbeat extends TTL to 180 ledgers"| T
+    T -->|"expire triggers cleanup"| P
+    P -->|"heartbeat cleans dead IDs"| P
+```
+
+**Storage layout:**
+- **Instance:** Admin (Address), UsdcAddr (Address), NextId (u32). Fixed size, never grows.
+- **Temporary:** Service(id) maps to ServiceInfo. Auto-expires when TTL reaches 0. Heartbeat extends to 180 ledgers (~15 min).
+- **Persistent:** CapIndex(capability) maps to Vec of service IDs. DepositRecord(id) stores owner + amount for refund.
+
+**Cleanup flows:**
+- Graceful shutdown: service calls deregister, removed immediately from index and temporary storage, deposit refunded.
+- Crash: no deregister call. TTL counts down. At TTL 0, Soroban deletes the entry. Next heartbeat from a live service in the same capability cleans the dead ID from CapIndex. Deposit reclaimable by owner via reclaim_deposit.
 
 ## Wallet policy contract
 
-On-chain source of truth for spending limits. All money amounts are i128 (stroops).
+On-chain source of truth for spending limits. All amounts are i128 (stroops).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Initialized: initialize(owner, limits)
+    [*] --> Initialized: initialize
 
     state "Policy Check" as PC {
-        [*] --> CheckPerTx: amount <= per_tx_limit?
+        [*] --> CheckPerTx: amount under per_tx_limit
         CheckPerTx --> CheckDaily: yes
-        CheckPerTx --> Denied: no (over_per_tx)
-        CheckDaily --> CheckRate: spent + amount <= daily_limit?
-        CheckDaily --> Denied: no (over_daily)
-        CheckRate --> CheckAllowlist: minute_count < rate_limit?
-        CheckRate --> Denied: no (rate_limited)
-        CheckAllowlist --> Allowed: recipient in allowlist?
-        CheckAllowlist --> Denied: no (bad_recv)
+        CheckPerTx --> Denied: over_per_tx
+        CheckDaily --> CheckRate: spent + amount under daily_limit
+        CheckDaily --> Denied: over_daily
+        CheckRate --> CheckAllowlist: minute_count under rate_limit
+        CheckRate --> Denied: rate_limited
+        CheckAllowlist --> Allowed: recipient in allowlist
+        CheckAllowlist --> Denied: bad_recv
     }
 
-    Initialized --> PC: check_policy(amount, recipient)
-    Allowed --> RecordSpend: record_spend(nonce, amount, recipient, tx_hash)
-    Denied --> RecordDenied: record_denied(amount, reason)
+    Initialized --> PC: check_policy
+    Allowed --> RecordSpend: record_spend with nonce
+    Denied --> RecordDenied: record_denied
 ```
 
 **8 functions:**
@@ -246,103 +263,113 @@ stateDiagram-v2
 |----------|------|---------|
 | `initialize` | write | Set owner, daily/per-tx/rate limits |
 | `check_policy` | read | Check all limits, return allowed/denied + remaining |
-| `record_spend` | write | Record confirmed spend, nonce dedup (Symbol max 32 chars) |
+| `record_spend` | write | Record confirmed spend, nonce dedup |
 | `record_denied` | write | Increment denied count, emit event |
 | `update_policy` | write | Change limits (owner auth) |
 | `set_allowlist` | write | Set recipient whitelist (owner auth) |
-| `get_today_spending` | read | Current day spend record (day_key = timestamp/86400) |
+| `get_today_spending` | read | Current day spend record |
 | `get_lifetime_stats` | read | Total spent, tx count, denied count |
-
-Storage: instance (policy, owner, allowlist) + persistent (spend records, nonces, lifetime).
 
 ## Trust registry contract
 
-On-chain directory of paid API services with anti-spam deposits and trust scoring.
-
-**Storage layout:**
-- **Instance:** Admin (Address), UsdcAddr (Address), NextId (u32) -- fixed size, never grows
-- **Temporary:** Service(id) -> ServiceInfo -- auto-expires when TTL reaches 0, TTL extended by heartbeat (180 ledgers)
-- **Persistent:** CapIndex(capability) -> Vec of service IDs, Deposit(id) -> i128
-
-ServiceInfo contains a single `capability: Symbol` (not a Vec), plus `total_reports` and `successful_reports` for trust scoring. No `status` or `heartbeat` fields -- liveness is managed entirely through temporary storage TTL.
-
-**7 functions:**
+**8 functions:**
 
 | Function | Type | Purpose |
 |----------|------|---------|
-| `initialize` | write | Set admin, USDC SAC address |
-| `register_service` | write | Register (url: String, name: Symbol) + deposit 100,000 stroops |
-| `deregister_service` | write | Takes service_id only. Remove + refund deposit |
-| `heartbeat` | write | Takes service_id only. Extends TTL to 180 ledgers, cleans dead entries from CapIndex |
-| `report_quality` | write | Success/fail report (max 1/reporter/service/day) |
-| `list_services` | read | Takes (capability, min_score, limit). Scans CapIndex for the capability instead of iterating 0..NextId |
-| `get_service` | read | Get single service info |
+| `initialize` | write | Set admin, USDC SAC address, NextId = 0 |
+| `register_service` | write | Collect deposit, assign ID, store in temporary, add to CapIndex |
+| `heartbeat` | write | Extend TTL to 180 ledgers, clean dead entries from CapIndex |
+| `deregister_service` | write | Remove from temporary + CapIndex, refund deposit |
+| `list_services` | read | Scan CapIndex by capability, filter by score, limit results |
+| `get_service` | read | Direct lookup by ID from temporary storage |
+| `report_quality` | write | Success/fail report, max 1 per reporter per service per day |
+| `reclaim_deposit` | write | Reclaim deposit after service TTL expires (crash recovery) |
 
-Services auto-expire when their temporary storage TTL reaches 0 (no manual stale checking needed). Data sources send heartbeats every 4 minutes and deregister on graceful shutdown (SIGTERM/SIGINT).
+## File breakdown
 
-Trust score: `successes * 100 / total_reports`. Default 70 for new services.
-
-## Discovery pipeline
-
-```mermaid
-flowchart TD
-    START[discoverServices capability, minScore] --> CACHE{Cache hit?<br>TTL 2 min}
-    CACHE -->|yes| RETURN[Return cached]
-    CACHE -->|no| BAZAAR[Tier 1: x402 Bazaar<br>HTTP to OZ facilitator]
-    BAZAAR -->|success| REG
-    BAZAAR -->|fail| REG
-    REG[Tier 2: Trust Registry<br>Soroban list_services] --> COMBINE
-    COMBINE[Tier 3: Merge + Deduplicate<br>by URL, registry wins]
-    COMBINE --> SCORE[Filter by minScore<br>Sort by trust score desc]
-    SCORE --> STORE[Cache for 2 min]
-    STORE --> RETURN
-
-    style BAZAAR fill:#6366f1,color:#fff
-    style REG fill:#22c55e,color:#fff
 ```
+contracts/
+  wallet-policy/src/lib.rs        353 lines, 8 pub fn
+  trust-registry/src/lib.rs       426 lines, 8 pub fn
 
-Bazaar services not in the registry get default score 70 and "unverified" badge. On payment failure, the specific service is invalidated from cache.
+src/                              2156 lines total
+  autopay.ts                      308 lines  orchestrator
+  policy-client.ts                316 lines  Soroban RPC for wallet-policy
+  discovery.ts                    231 lines  3-tier discovery pipeline
+  registry-client.ts              230 lines  Soroban RPC for trust-registry
+  protocol-detector.ts            201 lines  HEAD probe, x402 v2 + MPP parsing
+  ws-server.ts                    170 lines  WebSocket + polling server
+  types.ts                        147 lines  6 error classes, 9 types
+  config.ts                       132 lines  env validation, x402 + mppx clients
+  security.ts                     117 lines  SSRF prevention, rate limiter
+  health-checker.ts               110 lines  periodic probes
+  budget-tracker.ts                88 lines  BigInt local cache
+  event-bus.ts                     65 lines  WebSocket broadcast
+  mutex.ts                         41 lines  sequential payment lock
+
+data-sources/src/                 702 lines total
+  shared.ts                       244 lines  x402 server factory, registration
+  analyst-api.ts                  231 lines  agent-to-agent
+  news-api.ts                      82 lines  x402 paywall
+  stellar-data-api.ts              75 lines  MPP paywall
+  weather-api.ts                   70 lines  x402 paywall
+
+mcp-server/src/
+  index.ts                        453 lines  6 tools, stdio transport
+
+dashboard/src/                    693 lines total
+  App.tsx                         543 lines  5 panels, dark theme
+  hooks/useWebSocket.ts           140 lines  auto-reconnect, backoff
+  main.tsx                          9 lines  React root
+
+scripts/                          429 lines total
+  seed-registry.ts                121 lines
+  run-demo.ts                     118 lines
+  setup-testnet.ts                104 lines
+  health-report.ts                 86 lines
+```
 
 ## Security model
 
 | Threat | Mitigation | Location |
 |--------|-----------|----------|
-| SSRF via URL | Block file://, private IPs, localhost (unless ALLOW_HTTP) | security.ts |
-| Overspend via prompt injection | On-chain policy check, allowlist enforcement | wallet-policy contract |
+| SSRF via URL | Block file://, private IPs, localhost unless ALLOW_HTTP | security.ts |
+| Overspend via prompt injection | On-chain policy check, allowlist enforcement | wallet-policy |
 | Concurrent budget race | Async mutex, one payment at a time | mutex.ts |
-| RPC downtime bypass | Fail-closed: RPC unreachable = payment denied | policy-client.ts |
-| Replay attack | Nonce stored on-chain, duplicates rejected | wallet-policy contract |
-| Nonce overflow | Truncated to 32 chars (Soroban Symbol limit) | autopay.ts |
-| Registry spam | $0.01 USDC deposit, forfeited if service TTL expires | trust-registry contract |
-| Fake quality reports | Max 1 report per (reporter, service, day) | trust-registry contract |
-| Secret exposure | Private key never exported/logged, masked in errors | config.ts, error paths |
+| RPC downtime bypass | Fail-closed: RPC unreachable = deny | policy-client.ts |
+| Replay attack | Nonce stored on-chain, duplicates rejected | wallet-policy |
+| Registry spam | $0.01 USDC deposit required | trust-registry |
+| Fake quality reports | Max 1 per reporter per service per day | trust-registry |
+| Secret exposure | Private key never exported or logged, masked in errors | config.ts |
 | Response body consumed twice | .text() once, JSON.parse separately | autopay.ts |
+| HEAD 200 but GET 402 | Re-classify response, fall through to payment | autopay.ts |
 
 ## Dashboard events
 
-The core engine emits events via WebSocket. The dashboard receives them as JSON with BigInt fields serialized to strings.
+Events emitted via WebSocket from the core engine. BigInt fields serialized to strings.
 
-| Event | Source | Dashboard panel |
-|-------|--------|----------------|
-| `spend:ok` | autopay.ts | Transaction log (green OK badge) |
-| `spend:api_error` | autopay.ts | Transaction log (red ERR badge) |
-| `spend:failed` | autopay.ts | Transaction log (red FAIL badge) |
-| `denied` | autopay.ts | Denied panel (red background) |
-| `discovery:updated` | discovery.ts | Service registry table |
+| Event | Source | Panel |
+|-------|--------|-------|
+| `spend:ok` | autopay.ts | Transaction log |
+| `spend:api_error` | autopay.ts | Transaction log |
+| `spend:failed` | autopay.ts | Transaction log |
+| `denied` | autopay.ts | Denied panel |
+| `budget:updated` | budget-tracker.ts | Budget panel |
 | `health:checked` | health-checker.ts | Health monitor |
-| `budget:updated` | budget-tracker.ts | Budget panel + header |
-| `registry:stale` | health-checker.ts | Health monitor (amber) |
+| `registry:stale` | health-checker.ts | Health monitor |
 
 ## Design decisions
 
-**BigInt everywhere for money.** JavaScript Number loses precision above 2^53. USDC has 7 decimal places. 1 USDC = 10,000,000 stroops. BigInt prevents rounding errors. The tradeoff: BigInt is not JSON-serializable, so every JSON.stringify needs a replacer function.
+**BigInt everywhere for money.** JavaScript Number loses precision above 2^53. USDC has 7 decimal places. 1 USDC = 10,000,000 stroops. BigInt prevents rounding errors. Tradeoff: BigInt is not JSON-serializable, so every JSON.stringify needs a replacer function.
 
-**Fail-closed on RPC failure.** If the Soroban RPC is down, `checkPolicy` returns `{ allowed: false, reason: "rpc_unavailable" }`. Allowing payments without policy check would defeat on-chain enforcement.
+**Fail-closed on RPC failure.** If Soroban RPC is down, checkPolicy returns denied. Allowing payments without policy check would defeat on-chain enforcement.
 
-**Mutex for sequential payments.** Two concurrent autopilotFetch calls could both pass the budget check and overspend. The mutex ensures one-at-a-time. The tradeoff: payments queue up and total latency increases linearly.
+**Mutex for sequential payments.** Two concurrent autopilotFetch calls could both pass the budget check and overspend. The mutex ensures one-at-a-time. Tradeoff: payments queue up and latency increases linearly.
 
-**Separate fetch wrappers for x402 and MPP.** The x402 SDK (`@x402/fetch`) wraps globalThis.fetch. The mppx SDK also wants to wrap fetch. To prevent conflicts, `Mppx.create({ polyfill: false })` creates a scoped `mppFetch` that handles MPP payments without touching the global. The protocol detector decides which wrapper to use.
+**Separate fetch wrappers.** x402 SDK wraps globalThis.fetch. mppx SDK also wants to wrap fetch. To prevent conflicts, `Mppx.create({ polyfill: false })` creates a scoped mppFetch. The protocol detector decides which wrapper to use.
 
-**2-minute cache for discovery.** Querying Soroban for every discover call is expensive (2-3 seconds). The cache balances freshness with latency. On payment failure, the specific service is invalidated immediately.
+**2-minute discovery cache.** Querying Soroban for every discover call takes 2-3 seconds. The cache balances freshness with latency. On payment failure, the specific service is invalidated immediately.
 
-**Nonce truncated to 32 chars.** Soroban Symbols are limited to 32 characters. The nonce format is `n{base36_timestamp}_{txHash_prefix}` sliced to 32 chars. This provides uniqueness without exceeding the contract's storage key limit.
+**Temporary storage for services.** Services auto-expire when TTL reaches 0. No manual stale checking. Living services clean dead entries from the capability index during heartbeat. This prevents the instance storage DoS vector (Veridise, Palta Labs) and removes the need for any manual stale-checking function.
+
+**Analyst as a real agent.** The analyst has its own wallet, its own x402 client, and makes autonomous economic decisions (which data to buy, how much to spend). This distinguishes it from a simple proxy or cache. The economics breakdown (earned, spent, profit) is visible in every response.

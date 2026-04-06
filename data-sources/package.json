@@ -4,14 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n weather,news,stellar \"tsx src/weather-api.ts\" \"tsx src/news-api.ts\" \"tsx src/stellar-data-api.ts\"",
+    "dev": "concurrently -n weather,news,stellar,analyst \"tsx src/weather-api.ts\" \"tsx src/news-api.ts\" \"tsx src/stellar-data-api.ts\" \"tsx src/analyst-api.ts\"",
     "dev:weather": "tsx src/weather-api.ts",
     "dev:news": "tsx src/news-api.ts",
-    "dev:stellar": "tsx src/stellar-data-api.ts"
+    "dev:stellar": "tsx src/stellar-data-api.ts",
+    "dev:analyst": "tsx src/analyst-api.ts"
   },
   "dependencies": {
     "express": "^4.21.0",
     "@x402/express": "latest",
+    "@x402/fetch": "latest",
     "@x402/core": "latest",
     "@x402/stellar": "latest",
     "@stellar/stellar-sdk": "^14.5.0",

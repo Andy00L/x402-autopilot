@@ -1,49 +1,43 @@
 # x402 Autopilot
 
-Smart agent wallet for Stellar. An MCP-enabled AI agent autonomously discovers paid APIs, pays for them with USDC on Stellar testnet, and receives data. All spending is enforced by an on-chain Soroban policy contract. Supports both x402 and MPP charge protocols with automatic detection.
+Smart agent wallet for Stellar. An MCP-enabled AI agent autonomously discovers paid APIs, negotiates x402/MPP payments with USDC on Stellar testnet, and receives data. All spending is enforced by an on-chain Soroban policy contract.
 
 [DEMO VIDEO](VIDEO_URL)
 
 ## What it does
 
-Claude Code connects to the autopilot MCP server and gets 6 tools. It discovers paid APIs via x402 Bazaar and an on-chain trust registry, pays for data with USDC micropayments, and tracks spending against on-chain limits. Two Soroban contracts (15 functions total) enforce daily budgets, per-transaction caps, rate limits, and recipient allowlists. The agent cannot overspend even if prompted to.
+Claude connects to the autopilot MCP server and gets 6 tools. It discovers paid APIs from three sources (x402 Bazaar, an on-chain trust registry, and the xlm402.com public catalog), pays with USDC micropayments, and tracks spending against on-chain limits. Two Soroban contracts (16 functions total) enforce daily budgets, per-transaction caps, rate limits, and recipient allowlists. The agent cannot overspend even if prompted to.
 
-The system handles both the x402 protocol (Coinbase/OZ) and the MPP charge protocol (Stellar/Stripe). A HEAD probe detects which protocol an endpoint uses, then routes to the correct payment flow. Three demo data sources are included: weather and news (x402) and Stellar network stats (MPP charge).
+The system supports both the x402 protocol (Coinbase/OZ) and the MPP charge protocol (Stellar/Stripe), auto-detected via HEAD probe. An analyst agent earns money by selling analyses and spends money to buy raw data from other services, creating a real agent-to-agent payment chain visible on-chain.
 
 ## Architecture
 
 ```mermaid
-graph TD
-    subgraph "AI Agent"
-        CC[Claude Code] -->|MCP stdio| MCP[MCP Server<br>6 tools]
-    end
+flowchart TD
+    Claude["Claude Desktop"] -->|MCP stdio| MCP["MCP Server<br/>6 tools"]
 
-    subgraph "Core Engine"
-        MCP --> AP[autopay.ts<br>Orchestrator]
-        AP --> PD[Protocol Detector<br>HEAD probe]
-        AP --> PC[Policy Client<br>Soroban RPC]
-        AP --> BT[Budget Tracker<br>BigInt cache]
-        AP --> DC[Discovery<br>Bazaar + Registry]
-        AP --> X4[x402 Fetch<br>@x402/fetch]
-        AP --> MP[MPP Fetch<br>mppx SDK]
-    end
+    MCP --> AP["autopay.ts<br/>orchestrator"]
+    AP --> PD["Protocol Detector<br/>HEAD probe"]
+    AP --> PC["Policy Client<br/>Soroban RPC"]
+    AP --> X4["x402 Client<br/>@x402/fetch"]
+    AP --> MPP["MPP Client<br/>mppx SDK"]
 
-    subgraph "Stellar Testnet"
-        PC --> WP[Wallet Policy<br>Contract]
-        DC --> TR[Trust Registry<br>Contract]
-        X4 --> FAC[OZ Facilitator]
-        MP --> SRPC[Soroban RPC]
-    end
+    PC --> WP["Wallet Policy<br/>8 functions"]
+    AP --> BT["Budget Tracker"]
+    BT -->|WebSocket| DASH["Dashboard :5173"]
 
-    subgraph "Data Sources"
-        PD --> W[Weather API<br>:4001 x402]
-        PD --> N[News API<br>:4002 x402]
-        PD --> S[Stellar Data<br>:4003 MPP]
-    end
+    X4 --> W1["Weather API<br/>:4001 x402"]
+    X4 --> N1["News API<br/>:4002 x402"]
+    X4 --> AN["Analyst Agent<br/>:4004 x402"]
+    X4 --> XL["xlm402.com<br/>21 testnet endpoints"]
+    MPP --> SD["Stellar Data<br/>:4003 MPP"]
 
-    subgraph "Dashboard"
-        AP -->|WebSocket| DASH[React Dashboard<br>:5173]
-    end
+    AN -->|"spends to buy data"| W1
+    AN -->|"spends to buy data"| N1
+    AN --> LLM["Claude LLM"]
+
+    AP --> DC["Discovery<br/>3-tier pipeline"]
+    DC --> TR["Trust Registry<br/>8 functions"]
 ```
 
 ## How it works
@@ -51,14 +45,17 @@ graph TD
 1. Agent calls `autopilot_pay_and_fetch(url)` via MCP
 2. HEAD probe detects protocol (x402 or MPP) and price from 402 headers
 3. On-chain policy check via Soroban (fail-closed: RPC down = payment denied)
-4. Payment executes: x402 via OZ facilitator, MPP via mppx SDK (handles full 402 challenge/credential cycle)
+4. Payment executes: x402 via facilitator, MPP via mppx SDK
 5. Spend recorded on-chain with nonce dedup, budget updated, quality reported
 
-## Quick start
+## Quick start: Developer setup
+
+Run the full demo with 4 local APIs + external services.
 
 ```bash
-# 1. Install
-git clone <repo> && cd x402-autopilot
+# 1. Clone and install
+git clone https://github.com/Andy00L/stelos.git
+cd stelos
 npm install --legacy-peer-deps
 
 # 2. Copy env template
@@ -78,24 +75,70 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address agent)"
 # 6. Get OZ API key
 #    Go to https://channels.openzeppelin.com/testnet/gen, copy the key
 
-# 7. Deploy your wallet-policy contract (you need your own, see note below)
+# 7. Deploy your wallet-policy contract
 npm run deploy:wallet-policy
-#    Copy the contract ID from the output into .env
+#    Copy the contract ID into .env as WALLET_POLICY_CONTRACT_ID
 
-# 8. Fill in .env: STELLAR_PRIVATE_KEY, STELLAR_PUBLIC_KEY, OZ_API_KEY,
-#    WALLET_POLICY_CONTRACT_ID (from step 7).
-#    Set all 3 API wallets to your public key for the demo.
-#    The trust-registry and USDC SAC IDs are pre-filled.
+# 8. (Optional) Setup analyst agent for agent-to-agent demo
+stellar keys generate analyst --network testnet
+curl "https://friendbot.stellar.org?addr=$(stellar keys address analyst)"
+#    Add USDC trustline, send USDC from main wallet
+#    Copy ANALYST_PRIVATE_KEY and ANALYST_PUBLIC_KEY to .env
 
-# 9. Start everything
+# 9. Fill remaining .env values:
+#    STELLAR_PRIVATE_KEY, STELLAR_PUBLIC_KEY, OZ_API_KEY
+#    Set all 3 API wallets to your public key for the demo
+#    Trust-registry and USDC SAC IDs are pre-filled
+
+# 10. Start everything
 npm run dev
+
+# 11. Configure Claude Desktop MCP (see section below)
 ```
 
-**Why you need your own wallet-policy:** The wallet-policy contract uses owner auth for spending operations (record_spend, update_policy, set_allowlist). Only the deployer's key can call these. The trust-registry is shared and public: anyone can register services, report quality, and read.
+## Quick start: Community user (MCP only)
+
+No local APIs needed. Discover and pay external services registered by the community and on xlm402.com.
+
+```bash
+# 1. Clone and install
+git clone https://github.com/Andy00L/stelos.git
+cd stelos
+npm install --legacy-peer-deps
+
+# 2. Copy env template and fill required values
+cp .env.example .env
+
+# 3. Generate YOUR keypair
+stellar keys generate myagent --network testnet
+curl "https://friendbot.stellar.org?addr=$(stellar keys address myagent)"
+# Get testnet USDC from https://faucet.circle.com (select Stellar)
+
+# 4. Get OZ API key from https://channels.openzeppelin.com/testnet/gen
+
+# 5. Deploy YOUR wallet-policy
+npm run deploy:wallet-policy
+
+# 6. Fill .env:
+#    STELLAR_PRIVATE_KEY, STELLAR_PUBLIC_KEY, OZ_API_KEY
+#    WALLET_POLICY_CONTRACT_ID (from step 5)
+#    Trust-registry and USDC SAC IDs are pre-filled
+
+# 7. Start ONLY the MCP server (no local APIs needed)
+npx tsx mcp-server/src/index.ts
+
+# 8. Configure Claude Desktop MCP, then ask:
+#    "Discover weather services"
+#    "Fetch weather from https://xlm402.com/testnet/weather/current?latitude=48.85&longitude=2.35"
+```
+
+The trust registry is shared. When any developer registers a service, all users discover it. When a service crashes, its TTL expires and it disappears automatically.
+
+**Why two setup paths?** The wallet-policy contract uses `owner.require_auth()` for spending operations. Only your key can authorize spending from your policy, so you must deploy your own. The trust-registry is a shared public directory, pre-deployed and reusable by everyone.
 
 ## MCP configuration
 
-Add to your Claude Code MCP settings:
+Add to your Claude Desktop MCP settings:
 
 ```json
 {
@@ -103,13 +146,13 @@ Add to your Claude Code MCP settings:
     "x402-autopilot": {
       "command": "npx",
       "args": ["tsx", "mcp-server/src/index.ts"],
-      "cwd": "/path/to/x402-autopilot",
+      "cwd": "/path/to/stelos",
       "env": {
         "STELLAR_PRIVATE_KEY": "S...",
         "STELLAR_PUBLIC_KEY": "G...",
         "WALLET_POLICY_CONTRACT_ID": "C...",
-        "TRUST_REGISTRY_CONTRACT_ID": "C...",
-        "USDC_SAC_CONTRACT_ID": "C...",
+        "TRUST_REGISTRY_CONTRACT_ID": "CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ",
+        "USDC_SAC_CONTRACT_ID": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
         "OZ_API_KEY": "...",
         "ALLOW_HTTP": "true"
       }
@@ -118,31 +161,59 @@ Add to your Claude Code MCP settings:
 }
 ```
 
-Then ask Claude: "Use autopilot to fetch weather data from http://localhost:4001/weather"
-
 ## MCP tools
 
 | Tool | Description |
 |------|-------------|
-| `autopilot_pay_and_fetch` | Pay for and fetch data from any x402/MPP endpoint |
-| `autopilot_research` | Auto-discover services by topic, fetch from multiple sources |
+| `autopilot_pay_and_fetch` | Pay for and fetch data from any x402 or MPP endpoint |
+| `autopilot_research` | Auto-discover services by capability, fetch from multiple sources |
 | `autopilot_check_budget` | Read on-chain spending status (Soroban source of truth) |
-| `autopilot_discover` | List available paid APIs from Bazaar + trust registry |
+| `autopilot_discover` | List available paid APIs from Bazaar, trust registry, and xlm402.com |
 | `autopilot_set_policy` | Update on-chain spending limits (owner auth required) |
-| `autopilot_registry_status` | Service registry overview with health counts |
+| `autopilot_registry_status` | Service registry overview across all capabilities |
+
+## Services
+
+| Service | Location | Protocol | Price | Description |
+|---------|----------|----------|-------|-------------|
+| Weather | localhost:4001 | x402 | $0.001 | Demo weather data |
+| News | localhost:4002 | x402 | $0.001 | Demo news headlines |
+| Stellar Data | localhost:4003 | MPP | $0.002 | Stellar network stats |
+| Analyst Agent | localhost:4004 | x402 | $0.005 | Buys weather + news, reasons with LLM, returns analysis |
+| xlm402.com | External | x402 | $0.01+ | 21 testnet endpoints: weather, news, crypto, scraping |
+
+The analyst agent has its own wallet. It earns $0.005 per analysis and spends $0.002 to buy raw data from weather and news APIs. Three wallets, four transactions, two directions of money flow, all visible on stellar.expert.
 
 ## Project structure
 
 ```
-x402-autopilot/
+stelos/
   contracts/
-    wallet-policy/     8 functions, 353 lines: budget enforcement, nonce dedup
-    trust-registry/    7 functions: service directory, trust scoring, TTL auto-expire
-  src/                 12 modules, 1831 lines: core TypeScript engine
-  data-sources/        3 Express servers: weather, news, stellar-data
-  mcp-server/          6 MCP tools, 464 lines
-  dashboard/           React + Vite + WebSocket, 5 panels
-  scripts/             6 scripts: setup, deploy, seed, demo, health
+    wallet-policy/src/lib.rs      8 functions, 353 lines
+    trust-registry/src/lib.rs     8 functions, 426 lines
+  src/                            13 modules, 2156 lines
+    autopay.ts                    308 lines, payment orchestrator
+    policy-client.ts              316 lines, Soroban RPC for wallet-policy
+    discovery.ts                  231 lines, 3-tier pipeline
+    registry-client.ts            230 lines, Soroban RPC for trust-registry
+    protocol-detector.ts          201 lines, HEAD probe + header parsing
+    config.ts                     132 lines, env validation + x402/mppx clients
+    types.ts                      147 lines, 6 error classes + 9 type defs
+    security.ts                   117 lines, SSRF prevention + rate limiter
+    health-checker.ts             110 lines, periodic probes
+    budget-tracker.ts             88 lines, BigInt local cache
+    event-bus.ts                  65 lines, WebSocket broadcast
+    ws-server.ts                  170 lines, WebSocket + polling server
+    mutex.ts                      41 lines, sequential payment lock
+  data-sources/src/               5 files, 702 lines
+    shared.ts                     244 lines, x402 server factory + registration
+    analyst-api.ts                231 lines, agent-to-agent
+    news-api.ts                   82 lines
+    stellar-data-api.ts           75 lines
+    weather-api.ts                70 lines
+  mcp-server/src/index.ts         453 lines, 6 tools
+  dashboard/src/                  693 lines, React + Vite + WebSocket
+  scripts/                        4 TS scripts, 429 lines
 ```
 
 ## Tech stack
@@ -153,85 +224,93 @@ x402-autopilot/
 | Core engine | TypeScript | 5.4+ |
 | x402 client | @x402/fetch + @x402/stellar | latest |
 | x402 server | @x402/express + OZ facilitator | latest |
-| MPP client | mppx SDK (polyfill: false) | latest |
+| MPP client | mppx SDK | latest |
 | MPP server | mppx/express + @stellar/mpp | latest |
-| Stellar SDK | @stellar/stellar-sdk | ^14.5.0 |
-| MCP server | @modelcontextprotocol/sdk | ^1.0.0 |
-| Data sources | Express | ^4.21.0 |
-| Dashboard | React + Vite | 18.3 / 5.4 |
+| Stellar SDK | @stellar/stellar-sdk | 14.5.0 |
+| MCP server | @modelcontextprotocol/sdk | 1.0.0 |
+| Data sources | Express | 4.21.0 |
+| Dashboard | React + Vite | 18 / 5 |
 | Network | Stellar testnet | soroban-testnet.stellar.org |
+
+## Contracts on testnet
+
+| Contract | Ownership | Deploy |
+|----------|-----------|--------|
+| wallet-policy | Per-user (owner auth on writes) | `npm run deploy:wallet-policy` (required) |
+| trust-registry | Shared (anyone reads/registers) | Pre-deployed: `CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ` |
+| USDC SAC | Stellar system contract | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
+
+## Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| STELLAR_PRIVATE_KEY | Yes | Agent secret key (S...) |
+| STELLAR_PUBLIC_KEY | Yes | Agent public key (G...) |
+| OZ_API_KEY | Yes | OpenZeppelin facilitator API key |
+| WALLET_POLICY_CONTRACT_ID | Yes | Your deployed wallet-policy contract |
+| TRUST_REGISTRY_CONTRACT_ID | No | Pre-filled. Shared on testnet. |
+| USDC_SAC_CONTRACT_ID | No | Pre-filled. Stellar Asset Contract for USDC. |
+| WEATHER_API_WALLET | Dev | Seller wallet for weather API |
+| NEWS_API_WALLET | Dev | Seller wallet for news API |
+| STELLAR_DATA_API_WALLET | Dev | Seller wallet for stellar data API |
+| MPP_SECRET_KEY | Dev | HMAC key for MPP charge server |
+| ANALYST_PRIVATE_KEY | Optional | Analyst agent keypair (agent-to-agent demo) |
+| ANALYST_PUBLIC_KEY | Optional | Analyst agent public key |
+| ANTHROPIC_API_KEY | Optional | If set, analyst uses Anthropic API. Otherwise uses claude -p headless. |
+| ALLOW_HTTP | Dev | Set true for localhost HTTP APIs |
 
 ## Edge cases handled
 
 | # | Edge case | Solution | Where |
 |---|-----------|----------|-------|
-| 1 | Float precision for money | BigInt stroops everywhere (1 USDC = 10,000,000) | types.ts, budget-tracker.ts |
-| 2 | Payment OK but API error | record_spend anyway (money is gone) | autopay.ts catch block |
+| 1 | Float precision for money | BigInt stroops everywhere (1 USDC = 10,000,000) | types.ts |
+| 2 | Payment OK but API error | record_spend anyway (money is gone) | autopay.ts catch |
 | 3 | Two payments race | Async mutex, one payment at a time | mutex.ts |
 | 4 | Soroban RPC down | FAIL CLOSED, deny payment | policy-client.ts |
 | 5 | RPC timeout on record_spend | Retry 3x with 1s/2s/4s backoff | policy-client.ts |
 | 6 | HEAD probe timeout | 5s timeout, retry once | protocol-detector.ts |
 | 7 | SSRF via URL | Block file://, private IPs, localhost | security.ts |
-| 8 | Prompt injection spend | On-chain allowlist rejects unknown recipients | wallet-policy contract |
-| 9 | Duplicate record_spend | Nonce stored on-chain, rejects duplicates | wallet-policy contract |
-| 10 | Day rollover | day_key = timestamp/86400, fresh record each day | wallet-policy contract |
-| 11 | Spam registrations | $0.01 USDC deposit required | trust-registry contract |
-| 12 | Service goes down silently | TTL auto-expire + heartbeat cleanup of CapIndex | trust-registry contract |
-| 13 | Response body read twice | .text() once, JSON.parse separately | autopay.ts |
-| 14 | WebSocket disconnect | Auto-reconnect 1s-30s exponential backoff | useWebSocket.ts |
-| 15 | Nonce exceeds Symbol limit | Truncated to 32 chars for Soroban | autopay.ts |
-| 16 | x402 v2 PAYMENT-REQUIRED | Base64 header decoded, price + payTo extracted | protocol-detector.ts |
-
-## Hackathon tags (9/9)
-
-| Tag | Integration |
-|-----|-------------|
-| x402 | Client: @x402/fetch + @x402/stellar. Server: @x402/express + OZ facilitator. Bazaar: @x402/extensions. 2 paywalled APIs (weather, news). |
-| MPP | Client: mppx SDK (Mppx.create, polyfill: false). Server: mppx/express + @stellar/mpp/charge. 1 paywalled API (stellar-data). Auto-detected by protocol detector. |
-| Stellar | USDC testnet, 2 Soroban contracts, Horizon balance checks, Friendbot setup. |
-| Soroban | Wallet policy (8 functions) + Trust registry (7 functions). soroban-sdk 22.0.0. |
-| Claude | MCP server with 6 tools via @modelcontextprotocol/sdk. Claude Code as primary interface. |
-| Agents | Financially autonomous agent. Discovers, pays, receives data without human input. |
-| AI | Claude reasons about budget, source quality, risk. Chooses services by trust score. |
-| OpenClaw | SKILL.md in /skill/. Compatible with Telegram/Discord/Slack bots. |
-| Crypto | USDC micropayments on Stellar. BigInt stroops. On-chain audit trail via contract events. |
+| 8 | Prompt injection spend | On-chain allowlist rejects unknown recipients | wallet-policy |
+| 9 | Duplicate record_spend | Nonce stored on-chain, rejects duplicates | wallet-policy |
+| 10 | Spam registrations | $0.01 USDC deposit required | trust-registry |
+| 11 | Service goes down | TTL auto-expire + heartbeat cleanup of CapIndex | trust-registry |
+| 12 | Deposit lost on crash | reclaim_deposit after service TTL expires | trust-registry |
+| 13 | Duplicate URL in same capability | register_service rejects duplicate URLs | trust-registry |
+| 14 | HEAD returns 200, GET returns 402 | Re-classify on 402, fall through to payment | autopay.ts |
+| 15 | xlm402.com down | Discovery degrades, Tier 1+2 still work | discovery.ts |
+| 16 | Response body read twice | .text() once, JSON.parse separately | autopay.ts |
 
 ## What makes this different
 
 Most x402 demos show a single fetch call with a hardcoded URL. This project adds:
 
-- On-chain spending policy (not just a local check, the Soroban contract is the source of truth)
-- Dual protocol support (x402 and MPP charge, auto-detected via HEAD probe)
-- Trust-scored service discovery (Bazaar + on-chain registry, sorted by quality reports)
-- Anti-spam deposits ($0.01 USDC to register a service, refunded on deregister)
-- Nonce-based idempotency (contract rejects duplicate spend records)
-- Fail-closed security (if Soroban RPC is down, payment is denied, not allowed)
-- Real-time dashboard (WebSocket, 5 panels, live spend tracking)
+- **On-chain spending policy.** The Soroban contract is the source of truth, not a local check.
+- **Dual protocol support.** x402 and MPP charge, auto-detected via HEAD probe.
+- **3-tier discovery.** Bazaar CDP + on-chain trust registry + xlm402.com catalog.
+- **Agent-to-agent payments.** The analyst earns $0.005 and spends $0.002 to buy data.
+- **Anti-spam deposits.** $0.01 USDC to register, refunded on deregister, reclaimable after TTL expiry.
+- **Fail-closed security.** If Soroban RPC is down, payment is denied.
+- **Real external payments.** Agent pays xlm402.com (21 testnet endpoints), USDC moves to a wallet we do not control.
 
-Tradeoffs: testnet Soroban transactions take 5-15 seconds to confirm. The mutex serializes payments, so concurrent requests queue up. In the demo setup, all three API wallets use the same address as the agent wallet, so USDC transfers are self-transfers with zero net balance change. A production setup would use separate seller wallets.
+**Tradeoffs:** Testnet Soroban transactions take 5-15 seconds. The mutex serializes payments, so concurrent requests queue. In the demo, weather/news/stellar-data wallets reuse the agent address (self-transfer). The analyst agent and xlm402.com have separate wallets, showing real USDC movement.
 
-## Future work
+## Hackathon tags (9/9)
 
-- MPP session/channel mode (persistent payment channels, lower per-call cost)
-- Mainnet deployment (real USDC, production facilitator)
-- Multi-chain support (EVM chains via x402, Stellar via MPP)
-- Agent-to-agent payments (one autopilot pays another autopilot's API)
-
-## Contracts on testnet
-
-Each user deploys their own **wallet-policy** (spending limits are personal). The **trust-registry** is shared (a public service directory).
-
-| Contract | Ownership | Deploy |
-|----------|-----------|--------|
-| wallet-policy | Per-user (owner auth on spend/policy) | `npm run deploy:wallet-policy` (required) |
-| trust-registry | Shared (anyone reads/registers) | Pre-deployed: `CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ` |
-| USDC SAC | Stellar system contract | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
-
-To deploy your own trust-registry (optional): `npm run deploy:trust-registry`
+| Tag | Integration |
+|-----|-------------|
+| x402 | Client: @x402/fetch + @x402/stellar. Server: @x402/express. Bazaar: @x402/extensions. 3 paywalled APIs + xlm402.com external. |
+| MPP | Client: mppx SDK. Server: mppx/express + @stellar/mpp/charge. 1 paywalled API (stellar-data). |
+| Stellar | USDC testnet, 2 Soroban contracts, Friendbot setup, 3+ wallets. |
+| Soroban | Wallet policy (8 functions) + Trust registry (8 functions). soroban-sdk 22.0.0. |
+| Claude | MCP server with 6 tools via @modelcontextprotocol/sdk. Claude as primary interface. |
+| Agents | Agent-to-agent: analyst earns and spends autonomously. Main agent discovers and pays without human input. |
+| AI | Claude reasons about budget, source quality, risk. Analyst agent reasons with LLM over purchased data. |
+| OpenClaw | SKILL.md in /skill/. Compatible with Telegram/Discord/Slack bots. |
+| Crypto | USDC micropayments on Stellar. BigInt stroops. On-chain audit trail. Anti-spam deposits. |
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System design, data flows, contract details
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System design, payment flows, contract details
 - [skill/SKILL.md](skill/SKILL.md) - OpenClaw skill definition
 
 ## License

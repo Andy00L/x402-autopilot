@@ -10,7 +10,7 @@ import { invalidateService } from "./discovery.js";
 import {
   PolicyDeniedError, PaymentError,
 } from "./types.js";
-import type { AutopilotResult, Protocol } from "./types.js";
+import type { AutopilotResult, DetectResult, Protocol } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Payment mutex — sequential payments per CLAUDE.md Rule 8
@@ -58,21 +58,36 @@ export async function autopilotFetch(url: string): Promise<AutopilotResult> {
     protocol = detection.protocol;
 
     // Step 4: Free endpoint — no payment needed
+    // Some servers (e.g. xlm402.com) return 200 on HEAD but 402 on GET.
+    // If the GET returns 402, re-detect from the response and fall through to payment.
     if (protocol === "free") {
-      const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-      const text = await response.text();
-      let data: unknown;
-      try { data = JSON.parse(text); } catch { data = text; }
-      return { data, costStroops: 0n, protocol: "free" };
+      const freeResponse = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      if (freeResponse.status !== 402) {
+        const text = await freeResponse.text();
+        let data: unknown;
+        try { data = JSON.parse(text); } catch { data = text; }
+        return { data, costStroops: 0n, protocol: "free" };
+      }
+      // 402 on GET — re-classify using the response headers
+      const reclassified = classifyFreeAs402(freeResponse);
+      protocol = reclassified.protocol;
+      if (reclassified.priceRaw) {
+        priceStroops = parsePriceStroops(reclassified.priceRaw);
+      }
+      recipient = reclassified.recipient;
+      // Fall through to payment flow (steps 5+)
     }
 
     // Step 5: Parse price — BigInt immediately (CLAUDE.md Rule 2)
-    const rawPrice = detection.priceRaw;
-    if (!rawPrice) {
-      throw new PaymentError(protocol, "no price found in payment headers");
+    // Skip if already parsed from a 402-on-GET reclassification (step 4 fallback)
+    if (priceStroops === 0n) {
+      const rawPrice = detection.priceRaw;
+      if (!rawPrice) {
+        throw new PaymentError(protocol, "no price found in payment headers");
+      }
+      priceStroops = parsePriceStroops(rawPrice);
+      recipient = detection.recipient;
     }
-    priceStroops = parsePriceStroops(rawPrice);
-    recipient = detection.recipient;
 
     // Step 6: Fast local budget check
     if (!budgetTracker.checkLocal(priceStroops)) {
@@ -233,6 +248,49 @@ async function executeMpp(url: string): Promise<Response> {
       `charge failed: ${err instanceof Error ? err.message : "unknown"}`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Re-classify a response that came back 402 on GET after HEAD returned 200.
+// Parses the x402 v2 payment-required header from the 402 response.
+// ---------------------------------------------------------------------------
+
+function classifyFreeAs402(response: Response): DetectResult {
+  const headers = response.headers;
+
+  // x402 v2: payment-required header (base64 JSON)
+  const paymentRequired = headers.get("payment-required");
+  if (paymentRequired) {
+    try {
+      const json = Buffer.from(paymentRequired, "base64").toString("utf-8");
+      const parsed = JSON.parse(json) as Record<string, unknown>;
+      const accepts = parsed.accepts;
+      if (Array.isArray(accepts) && accepts.length > 0) {
+        const first = accepts[0] as Record<string, unknown>;
+        return {
+          protocol: "x402",
+          headers,
+          priceRaw: typeof first.amount === "string" ? first.amount : undefined,
+          recipient: typeof first.payTo === "string" ? first.payTo : undefined,
+        };
+      }
+    } catch { /* fall through */ }
+  }
+
+  // x402 v1 / legacy
+  const legacyHeader = headers.get("x-payment") || headers.get("x-payment-required");
+  if (legacyHeader) {
+    return { protocol: "x402", headers };
+  }
+
+  // MPP
+  const wwwAuth = headers.get("www-authenticate") ?? "";
+  if (wwwAuth.toLowerCase().startsWith("payment")) {
+    return { protocol: "mpp", headers };
+  }
+
+  // Unrecognized 402 — assume x402
+  return { protocol: "x402", headers };
 }
 
 // ---------------------------------------------------------------------------
