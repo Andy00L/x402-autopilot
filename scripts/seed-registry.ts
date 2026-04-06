@@ -15,21 +15,21 @@ const SERVICES = [
   {
     name: "weather",
     url: `http://localhost:${process.env.PORT_WEATHER_API ?? "4001"}`,
-    capabilities: ["weather"],
+    capability: "weather",
     priceStroops: 10_000n,
     protocol: "x402",
   },
   {
     name: "news",
     url: `http://localhost:${process.env.PORT_NEWS_API ?? "4002"}`,
-    capabilities: ["news"],
+    capability: "news",
     priceStroops: 10_000n,
     protocol: "x402",
   },
   {
-    name: "stellar-data",
+    name: "stellar_data",
     url: `http://localhost:${process.env.PORT_STELLAR_DATA_API ?? "4003"}`,
-    capabilities: ["blockchain-data"],
+    capability: "blockchain",
     priceStroops: 20_000n,
     protocol: "mpp",
   },
@@ -62,9 +62,9 @@ async function main(): Promise<void> {
           contract.call(
             "register_service",
             new Address(keypair.publicKey()).toScVal(),
-            nativeToScVal(svc.url, { type: "symbol" }),
+            nativeToScVal(svc.url),                         // String (URLs contain :/.)
             nativeToScVal(svc.name, { type: "symbol" }),
-            nativeToScVal(svc.capabilities, { type: "symbol" }),
+            nativeToScVal(svc.capability, { type: "symbol" }), // Single Symbol
             nativeToScVal(svc.priceStroops, { type: "i128" }),
             nativeToScVal(svc.protocol, { type: "symbol" }),
           ),

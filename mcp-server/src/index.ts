@@ -134,13 +134,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           capability: {
             type: "string",
             description:
-              "Filter by capability (e.g. 'weather', 'search', 'blockchain-data')",
+              "Filter by capability: weather, news, blockchain, analysis. Required.",
           },
-          min_score: {
+          limit: {
             type: "number",
-            description: "Minimum trust score (0-100)",
+            description: "Max results to return. Default 10.",
           },
         },
+        required: ["capability"],
       },
     },
     {
@@ -253,15 +254,9 @@ async function handleResearch(
       // Explicit URLs provided
       urls = (args.urls as unknown[]).map(String);
     } else if (typeof args.query === "string" && args.query) {
-      // Discover services by capability
-      const services = await discoverServices(args.query);
-      if (services.length === 0) {
-        // Fallback: try without capability filter
-        const allServices = await discoverServices();
-        urls = allServices.map((s: ServiceInfo) => s.url);
-      } else {
-        urls = services.map((s: ServiceInfo) => s.url);
-      }
+      // Discover services by capability (query used as capability name)
+      const services = await discoverServices(args.query, 0, 10);
+      urls = services.map((s: ServiceInfo) => s.url);
     } else {
       return fail(new Error("Provide either 'query' or 'urls'"));
     }
@@ -339,11 +334,11 @@ async function handleDiscover(
 ) {
   try {
     const capability =
-      typeof args.capability === "string" ? args.capability : undefined;
-    const minScore =
-      typeof args.min_score === "number" ? args.min_score : undefined;
+      typeof args.capability === "string" ? args.capability : "weather";
+    const limit =
+      typeof args.limit === "number" ? args.limit : 10;
 
-    const services = await discoverServices(capability, minScore);
+    const services = await discoverServices(capability, 0, limit);
 
     return ok({
       services: services.map(serializeService),
@@ -400,28 +395,24 @@ async function handleSetPolicy(
 
 async function handleRegistryStatus() {
   try {
-    // List all services (use a broad capability, then unfiltered fallback)
-    let services: ServiceInfo[] = [];
-    try {
-      services = await registryClient.listServices(undefined, 0);
-    } catch {
-      // Registry might be empty or RPC down
+    // v2: services are per-capability. Query known capabilities.
+    const KNOWN_CAPS = ["weather", "news", "blockchain", "analysis"];
+    const allServices: ServiceInfo[] = [];
+
+    for (const cap of KNOWN_CAPS) {
+      try {
+        const services = await registryClient.listServices(cap, 0, 50);
+        allServices.push(...services);
+      } catch {
+        // This capability might have no index yet
+      }
     }
 
-    const healthy = services.filter(
-      (s) => s.status === "active" && s.score >= 50,
-    );
-    const stale = services.filter((s) => s.status === "stale");
-    const dead = services.filter(
-      (s) => s.status === "removed" || s.status === "unknown",
-    );
-
+    // In v2, all returned services are alive (temporary storage ensures this)
     return ok({
-      total: services.length,
-      healthy: healthy.length,
-      stale: stale.length,
-      dead: dead.length,
-      services: services.map(serializeService),
+      total: allServices.length,
+      alive: allServices.length,
+      services: allServices.map(serializeService),
     });
   } catch (err) {
     return fail(err);
@@ -437,12 +428,10 @@ function serializeService(s: ServiceInfo): Record<string, unknown> {
     service_id: s.serviceId,
     name: s.name,
     url: s.url,
-    capabilities: s.capabilities,
+    capability: s.capability,
     price_stroops: s.priceStroops,
     protocol: s.protocol,
     score: s.score,
-    status: s.status,
-    last_heartbeat: s.lastHeartbeat,
   };
 }
 

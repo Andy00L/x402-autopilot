@@ -93,12 +93,10 @@ export interface ServiceInfo {
   serviceId: number;
   name: string;
   url: string;
-  capabilities: string[];
+  capability: string;
   priceStroops: bigint;
   protocol: string;
   score: number;
-  status: string;
-  lastHeartbeat: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -24,12 +24,10 @@ async function main(): Promise<void> {
         serviceId: -1,
         name: p.name,
         url: p.url,
-        capabilities: [],
+        capability: "",
         priceStroops: 0n,
         protocol: "unknown",
         score: 0,
-        status: "unknown",
-        lastHeartbeat: 0,
       });
     }
   }

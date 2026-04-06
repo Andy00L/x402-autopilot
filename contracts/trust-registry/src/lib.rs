@@ -1,30 +1,8 @@
 #![no_std]
 use soroban_sdk::{
     contract, contractimpl, contracttype, token,
-    Address, Env, Symbol, Vec, symbol_short,
+    Address, Env, String, Symbol, Vec,
 };
-
-// ---------------------------------------------------------------------------
-// Storage key enum
-// ---------------------------------------------------------------------------
-
-#[contracttype]
-#[derive(Clone)]
-pub struct ReportKey {
-    pub reporter: Address,
-    pub svc_id: u32,
-    pub day_key: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub enum DataKey {
-    Admin,
-    NextId,
-    UsdcAddr,
-    Service(u32),
-    Report(ReportKey),
-}
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -32,23 +10,39 @@ pub enum DataKey {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SvcInfo {
+pub struct ServiceInfo {
     pub id: u32,
     pub owner: Address,
-    pub url: Symbol,
+    pub url: String,
     pub name: Symbol,
-    pub caps: Vec<Symbol>,
+    pub capability: Symbol,
     pub price: i128,
     pub protocol: Symbol,
-    pub deposit: i128,
-    pub status: Symbol,
-    pub heartbeat: u32,
     pub score: u32,
-    pub reports: u32,
-    pub successes: u32,
+    pub total_reports: u32,
+    pub successful_reports: u32,
 }
 
-/// Anti-spam deposit amount: 100_000 stroops = $0.01 USDC (7 decimals).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct DepositRecord {
+    pub owner: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    Admin,
+    UsdcAddr,
+    NextId,
+    Service(u32),
+    CapIndex(Symbol),
+    Deposit(u32),
+    QualityReport(Address, u32),
+}
+
+/// Anti-spam deposit: 100,000 stroops ($0.01 USDC, 7 decimals).
 const DEPOSIT_AMOUNT: i128 = 100_000;
 
 // ---------------------------------------------------------------------------
@@ -68,284 +62,365 @@ impl TrustRegistry {
         admin.require_auth();
 
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::NextId, &0u32);
         env.storage()
             .instance()
             .set(&DataKey::UsdcAddr, &usdc_addr);
+        env.storage().instance().set(&DataKey::NextId, &0u32);
+        env.storage().instance().extend_ttl(100_000, 100_000);
     }
 
     /// Register a new paid-API service. Requires anti-spam deposit of $0.01 USDC.
     /// Returns the assigned service ID.
+    ///
+    /// NOTE: Each registration covers ONE capability. To register a service
+    /// with multiple capabilities, call register_service once per capability.
+    /// Each call assigns a new ID, collects a separate deposit, and requires
+    /// its own heartbeat. The same URL appearing in multiple CapIndex entries
+    /// is expected and correct behavior.
     pub fn register_service(
         env: Env,
         owner: Address,
-        url: Symbol,
+        url: String,
         name: Symbol,
-        capabilities: Vec<Symbol>,
-        price_stroops: i128,
+        capability: Symbol,
+        price: i128,
         protocol: Symbol,
     ) -> u32 {
         owner.require_auth();
 
-        // Transfer deposit from owner -> contract
+        // Collect anti-spam deposit via SAC transfer
         let usdc_addr: Address = env
             .storage()
             .instance()
             .get(&DataKey::UsdcAddr)
-            .expect("not initialized");
-        let contract_addr = env.current_contract_address();
+            .expect("contract not initialized");
         token::TokenClient::new(&env, &usdc_addr).transfer(
             &owner,
-            &contract_addr,
+            &env.current_contract_address(),
             &DEPOSIT_AMOUNT,
         );
 
-        // Allocate ID
+        // Assign ID from counter (guard against u32 overflow)
         let id: u32 = env
             .storage()
             .instance()
             .get(&DataKey::NextId)
-            .expect("not initialized");
-        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+            .expect("contract not initialized");
+        if id == u32::MAX {
+            panic!("service ID space exhausted");
+        }
 
-        let service = SvcInfo {
+        // Check for duplicate URL within this capability
+        let cap_key = DataKey::CapIndex(capability.clone());
+        let mut cap_ids: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&cap_key)
+            .unwrap_or(Vec::new(&env));
+        for existing_id in cap_ids.iter() {
+            if let Some(existing) = env
+                .storage()
+                .temporary()
+                .get::<_, ServiceInfo>(&DataKey::Service(existing_id))
+            {
+                if existing.url == url {
+                    panic!("service with this URL already registered in this capability");
+                }
+            }
+        }
+
+        let info = ServiceInfo {
             id,
             owner: owner.clone(),
             url,
             name,
-            caps: capabilities,
-            price: price_stroops,
+            capability: capability.clone(),
+            price,
             protocol,
-            deposit: DEPOSIT_AMOUNT,
-            status: symbol_short!("active"),
-            heartbeat: env.ledger().sequence(),
-            score: 70, // default trust score
-            reports: 0,
-            successes: 0,
+            score: 70,
+            total_reports: 0,
+            successful_reports: 0,
         };
 
+        // Store service in TEMPORARY storage (5 min TTL = 60 ledgers)
+        env.storage().temporary().set(&DataKey::Service(id), &info);
+        env.storage()
+            .temporary()
+            .extend_ttl(&DataKey::Service(id), 60, 60);
+
+        // Store deposit with owner info in PERSISTENT (for refund on deregister or reclaim)
+        let deposit_record = DepositRecord {
+            owner: owner.clone(),
+            amount: DEPOSIT_AMOUNT,
+        };
         env.storage()
             .persistent()
-            .set(&DataKey::Service(id), &service);
+            .set(&DataKey::Deposit(id), &deposit_record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Deposit(id), 100_000, 100_000);
 
-        env.events().publish(
-            (symbol_short!("registry"), symbol_short!("register")),
-            (id, owner),
-        );
+        // Add to capability index in PERSISTENT
+        cap_ids.push_back(id);
+        env.storage().persistent().set(&cap_key, &cap_ids);
+        env.storage()
+            .persistent()
+            .extend_ttl(&cap_key, 100_000, 100_000);
+
+        // Increment counter
+        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().instance().extend_ttl(100_000, 100_000);
+
+        env.events()
+            .publish((Symbol::new(&env, "register"), capability), id);
 
         id
     }
 
-    /// Deregister a service and refund deposit. Owner authorization required.
-    pub fn deregister_service(env: Env, owner: Address, service_id: u32) {
-        owner.require_auth();
-
-        let service: SvcInfo = env
+    /// Heartbeat: extend service TTL and clean dead entries from capability index.
+    pub fn heartbeat(env: Env, service_id: u32) {
+        let info: ServiceInfo = env
             .storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::Service(service_id))
-            .expect("service not found");
+            .expect("service expired or not found, re-register");
 
-        if service.owner != owner {
-            panic!("not service owner");
-        }
+        info.owner.require_auth();
 
-        // Refund deposit: contract -> owner
-        if service.deposit > 0 {
-            let usdc_addr: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::UsdcAddr)
-                .expect("not initialized");
-            let contract_addr = env.current_contract_address();
-            token::TokenClient::new(&env, &usdc_addr).transfer(
-                &contract_addr,
-                &owner,
-                &service.deposit,
-            );
-        }
-
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Service(service_id));
-
-        env.events().publish(
-            (symbol_short!("registry"), symbol_short!("deregist")),
-            (service_id, owner),
-        );
-    }
-
-    /// Heartbeat: prove the service is still alive. Must be called every ~720 ledgers (~1h).
-    pub fn heartbeat(env: Env, owner: Address, service_id: u32) {
-        owner.require_auth();
-
-        let mut service: SvcInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Service(service_id))
-            .expect("service not found");
-
-        if service.owner != owner {
-            panic!("not service owner");
-        }
-
-        service.heartbeat = env.ledger().sequence();
-        service.status = symbol_short!("active");
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Service(service_id), &service);
-    }
-
-    /// Report quality for a service. Max 1 report per (reporter, service, day).
-    pub fn report_quality(env: Env, reporter: Address, service_id: u32, success: bool) {
-        reporter.require_auth();
-
-        let mut service: SvcInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Service(service_id))
-            .expect("service not found");
-
-        // Enforce max 1 report per (reporter, service_id, day)
-        let day_key = env.ledger().timestamp() / 86400;
-        let report_key = DataKey::Report(ReportKey {
-            reporter: reporter.clone(),
-            svc_id: service_id,
-            day_key,
-        });
-
-        if env.storage().temporary().has(&report_key) {
-            panic!("already reported today");
-        }
-        env.storage().temporary().set(&report_key, &true);
-        // TTL: extend so it lasts at least the rest of the day (~17280 ledgers = 24h)
+        // Extend TTL to 15 min (180 ledgers)
         env.storage()
             .temporary()
-            .extend_ttl(&report_key, 17280, 17280);
+            .extend_ttl(&DataKey::Service(service_id), 180, 180);
 
-        // Update report counts
-        service.reports += 1;
-        if success {
-            service.successes += 1;
-        }
-
-        // Recalculate trust score
-        if service.reports > 0 {
-            service.score = service.successes * 100 / service.reports;
-        } else {
-            service.score = 70;
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Service(service_id), &service);
-
-        env.events().publish(
-            (symbol_short!("registry"), symbol_short!("quality")),
-            (service_id, reporter, success),
-        );
-    }
-
-    /// List services filtered by capability and minimum trust score.
-    /// Only returns active or stale services.
-    pub fn list_services(env: Env, capability: Symbol, min_score: u32) -> Vec<SvcInfo> {
-        let next_id: u32 = env
+        // Clean dead entries from this capability's index
+        let cap_key = DataKey::CapIndex(info.capability.clone());
+        let cap_ids: Vec<u32> = env
             .storage()
-            .instance()
-            .get(&DataKey::NextId)
-            .unwrap_or(0);
-        let mut result = Vec::new(&env);
+            .persistent()
+            .get(&cap_key)
+            .unwrap_or(Vec::new(&env));
 
-        for i in 0..next_id {
-            if let Some(service) =
-                env.storage()
-                    .persistent()
-                    .get::<DataKey, SvcInfo>(&DataKey::Service(i))
-            {
-                // Only active or stale
-                if service.status != symbol_short!("active")
-                    && service.status != symbol_short!("stale")
-                {
-                    continue;
-                }
-
-                // Score filter
-                if service.score < min_score {
-                    continue;
-                }
-
-                // Capability filter
-                if service.caps.contains(&capability) {
-                    result.push_back(service);
-                }
+        let mut clean_ids = Vec::new(&env);
+        for id in cap_ids.iter() {
+            if env.storage().temporary().has(&DataKey::Service(id)) {
+                clean_ids.push_back(id);
             }
         }
 
-        result
+        // Only write back if dead entries were actually removed
+        if clean_ids.len() != cap_ids.len() {
+            env.storage().persistent().set(&cap_key, &clean_ids);
+            env.storage()
+                .persistent()
+                .extend_ttl(&cap_key, 100_000, 100_000);
+        }
     }
 
-    /// Get a single service by ID.
-    pub fn get_service(env: Env, service_id: u32) -> SvcInfo {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Service(service_id))
-            .expect("service not found")
-    }
-
-    /// Permissionless staleness check. Anyone can call.
-    /// >720 ledgers since heartbeat = stale.
-    /// >7200 ledgers = removed + deposit forfeited to admin.
-    pub fn check_stale(env: Env, service_id: u32) {
-        let mut service: SvcInfo = env
+    /// Deregister a service. Removes from temporary + CapIndex. Refunds deposit.
+    pub fn deregister_service(env: Env, service_id: u32) {
+        let info: ServiceInfo = env
             .storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::Service(service_id))
             .expect("service not found");
 
-        let current_seq = env.ledger().sequence();
-        let gap = current_seq.saturating_sub(service.heartbeat);
+        info.owner.require_auth();
 
-        if gap > 7200 {
-            // Removed: forfeit deposit to admin
-            if service.deposit > 0 {
+        // Remove from temporary storage
+        env.storage()
+            .temporary()
+            .remove(&DataKey::Service(service_id));
+
+        // Remove from capability index (also clean any other dead entries)
+        let cap_key = DataKey::CapIndex(info.capability.clone());
+        let cap_ids: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&cap_key)
+            .unwrap_or(Vec::new(&env));
+        let mut cleaned = Vec::new(&env);
+        for id in cap_ids.iter() {
+            if id != service_id {
+                cleaned.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&cap_key, &cleaned);
+        env.storage()
+            .persistent()
+            .extend_ttl(&cap_key, 100_000, 100_000);
+
+        // Refund deposit
+        let deposit_key = DataKey::Deposit(service_id);
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<_, DepositRecord>(&deposit_key)
+        {
+            if record.amount > 0 {
                 let usdc_addr: Address = env
                     .storage()
                     .instance()
                     .get(&DataKey::UsdcAddr)
-                    .expect("not initialized");
-                let admin: Address = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::Admin)
-                    .expect("not initialized");
-                let contract_addr = env.current_contract_address();
+                    .expect("contract not initialized");
                 token::TokenClient::new(&env, &usdc_addr).transfer(
-                    &contract_addr,
-                    &admin,
-                    &service.deposit,
+                    &env.current_contract_address(),
+                    &info.owner,
+                    &record.amount,
                 );
-                service.deposit = 0;
             }
-            service.status = symbol_short!("removed");
-            env.storage()
-                .persistent()
-                .set(&DataKey::Service(service_id), &service);
-
-            env.events().publish(
-                (symbol_short!("registry"), symbol_short!("removed")),
-                service_id,
-            );
-        } else if gap > 720 {
-            service.status = symbol_short!("stale");
-            env.storage()
-                .persistent()
-                .set(&DataKey::Service(service_id), &service);
-
-            env.events().publish(
-                (symbol_short!("registry"), symbol_short!("stale")),
-                service_id,
-            );
+            env.storage().persistent().remove(&deposit_key);
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "deregister"), info.capability),
+            service_id,
+        );
+    }
+
+    /// List services filtered by capability, minimum score, and limit.
+    /// Also cleans dead entries from the capability index.
+    pub fn list_services(
+        env: Env,
+        capability: Symbol,
+        min_score: u32,
+        limit: u32,
+    ) -> Vec<ServiceInfo> {
+        let cap_key = DataKey::CapIndex(capability);
+        let cap_ids: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&cap_key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut results = Vec::new(&env);
+        let mut live_ids = Vec::new(&env);
+
+        for id in cap_ids.iter() {
+            match env
+                .storage()
+                .temporary()
+                .get::<_, ServiceInfo>(&DataKey::Service(id))
+            {
+                Some(info) => {
+                    live_ids.push_back(id);
+                    if info.score >= min_score && results.len() < limit {
+                        results.push_back(info);
+                    }
+                }
+                None => {
+                    // Expired — not added to live_ids = cleaned from index
+                }
+            }
+        }
+
+        // Write cleaned index only if dead entries were found
+        if live_ids.len() != cap_ids.len() {
+            env.storage().persistent().set(&cap_key, &live_ids);
+            env.storage()
+                .persistent()
+                .extend_ttl(&cap_key, 100_000, 100_000);
+        }
+
+        results
+    }
+
+    /// Get a single service by ID.
+    pub fn get_service(env: Env, service_id: u32) -> ServiceInfo {
+        env.storage()
+            .temporary()
+            .get(&DataKey::Service(service_id))
+            .expect("service not found or expired")
+    }
+
+    /// Report quality for a service. Max 1 report per (reporter, service_id) per day.
+    pub fn report_quality(env: Env, reporter: Address, service_id: u32, success: bool) {
+        reporter.require_auth();
+
+        let mut info: ServiceInfo = env
+            .storage()
+            .temporary()
+            .get(&DataKey::Service(service_id))
+            .expect("service not found");
+
+        // Rate limit: 1 report per reporter per service per day
+        let day_key = env.ledger().timestamp() / 86400;
+        let report_key = DataKey::QualityReport(reporter.clone(), service_id);
+        let last_day: u32 = env.storage().temporary().get(&report_key).unwrap_or(0);
+        if last_day == day_key as u32 {
+            panic!("already reported today");
+        }
+        env.storage()
+            .temporary()
+            .set(&report_key, &(day_key as u32));
+        env.storage()
+            .temporary()
+            .extend_ttl(&report_key, 17280, 17280);
+
+        // Update score
+        info.total_reports += 1;
+        if success {
+            info.successful_reports += 1;
+        }
+        info.score = if info.total_reports > 0 {
+            (info.successful_reports * 100) / info.total_reports
+        } else {
+            70
+        };
+
+        env.storage()
+            .temporary()
+            .set(&DataKey::Service(service_id), &info);
+        // TTL NOT extended — only heartbeat extends service TTL
+    }
+
+    /// Reclaim deposit after a service has expired (crash recovery).
+    /// Only the original owner can reclaim. The service must have expired.
+    pub fn reclaim_deposit(env: Env, service_id: u32, owner: Address) {
+        owner.require_auth();
+
+        // Service must have expired (no longer in temporary storage)
+        if env
+            .storage()
+            .temporary()
+            .has(&DataKey::Service(service_id))
+        {
+            panic!("service is still active, use deregister_service instead");
+        }
+
+        // Read deposit record and verify ownership
+        let deposit_key = DataKey::Deposit(service_id);
+        let record: DepositRecord = env
+            .storage()
+            .persistent()
+            .get(&deposit_key)
+            .expect("no deposit found for this service ID");
+
+        if record.owner != owner {
+            panic!("only the original owner can reclaim the deposit");
+        }
+
+        if record.amount <= 0 {
+            panic!("deposit already reclaimed");
+        }
+
+        // Refund
+        let usdc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::UsdcAddr)
+            .expect("contract not initialized");
+        token::TokenClient::new(&env, &usdc_addr).transfer(
+            &env.current_contract_address(),
+            &owner,
+            &record.amount,
+        );
+
+        // Remove deposit record
+        env.storage().persistent().remove(&deposit_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "reclaim"),),
+            (service_id, owner, record.amount),
+        );
     }
 }

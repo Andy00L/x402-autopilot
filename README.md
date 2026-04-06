@@ -6,7 +6,7 @@ Smart agent wallet for Stellar. An MCP-enabled AI agent autonomously discovers p
 
 ## What it does
 
-Claude Code connects to the autopilot MCP server and gets 6 tools. It discovers paid APIs via x402 Bazaar and an on-chain trust registry, pays for data with USDC micropayments, and tracks spending against on-chain limits. Two Soroban contracts (16 functions total) enforce daily budgets, per-transaction caps, rate limits, and recipient allowlists. The agent cannot overspend even if prompted to.
+Claude Code connects to the autopilot MCP server and gets 6 tools. It discovers paid APIs via x402 Bazaar and an on-chain trust registry, pays for data with USDC micropayments, and tracks spending against on-chain limits. Two Soroban contracts (15 functions total) enforce daily budgets, per-transaction caps, rate limits, and recipient allowlists. The agent cannot overspend even if prompted to.
 
 The system handles both the x402 protocol (Coinbase/OZ) and the MPP charge protocol (Stellar/Stripe). A HEAD probe detects which protocol an endpoint uses, then routes to the correct payment flow. Three demo data sources are included: weather and news (x402) and Stellar network stats (MPP charge).
 
@@ -137,7 +137,7 @@ Then ask Claude: "Use autopilot to fetch weather data from http://localhost:4001
 x402-autopilot/
   contracts/
     wallet-policy/     8 functions, 353 lines: budget enforcement, nonce dedup
-    trust-registry/    8 functions, 351 lines: service directory, trust scoring
+    trust-registry/    7 functions: service directory, trust scoring, TTL auto-expire
   src/                 12 modules, 1831 lines: core TypeScript engine
   data-sources/        3 Express servers: weather, news, stellar-data
   mcp-server/          6 MCP tools, 464 lines
@@ -176,7 +176,7 @@ x402-autopilot/
 | 9 | Duplicate record_spend | Nonce stored on-chain, rejects duplicates | wallet-policy contract |
 | 10 | Day rollover | day_key = timestamp/86400, fresh record each day | wallet-policy contract |
 | 11 | Spam registrations | $0.01 USDC deposit required | trust-registry contract |
-| 12 | Service goes down silently | Heartbeat every ~1h, auto-stale after miss | trust-registry contract |
+| 12 | Service goes down silently | TTL auto-expire + heartbeat cleanup of CapIndex | trust-registry contract |
 | 13 | Response body read twice | .text() once, JSON.parse separately | autopay.ts |
 | 14 | WebSocket disconnect | Auto-reconnect 1s-30s exponential backoff | useWebSocket.ts |
 | 15 | Nonce exceeds Symbol limit | Truncated to 32 chars for Soroban | autopay.ts |
@@ -189,7 +189,7 @@ x402-autopilot/
 | x402 | Client: @x402/fetch + @x402/stellar. Server: @x402/express + OZ facilitator. Bazaar: @x402/extensions. 2 paywalled APIs (weather, news). |
 | MPP | Client: mppx SDK (Mppx.create, polyfill: false). Server: mppx/express + @stellar/mpp/charge. 1 paywalled API (stellar-data). Auto-detected by protocol detector. |
 | Stellar | USDC testnet, 2 Soroban contracts, Horizon balance checks, Friendbot setup. |
-| Soroban | Wallet policy (8 functions) + Trust registry (8 functions). soroban-sdk 22.0.0. |
+| Soroban | Wallet policy (8 functions) + Trust registry (7 functions). soroban-sdk 22.0.0. |
 | Claude | MCP server with 6 tools via @modelcontextprotocol/sdk. Claude Code as primary interface. |
 | Agents | Financially autonomous agent. Discovers, pays, receives data without human input. |
 | AI | Claude reasons about budget, source quality, risk. Chooses services by trust score. |
@@ -224,7 +224,7 @@ Each user deploys their own **wallet-policy** (spending limits are personal). Th
 | Contract | Ownership | Deploy |
 |----------|-----------|--------|
 | wallet-policy | Per-user (owner auth on spend/policy) | `npm run deploy:wallet-policy` (required) |
-| trust-registry | Shared (anyone reads/registers) | Pre-deployed: `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` |
+| trust-registry | Shared (anyone reads/registers) | Pre-deployed: `CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ` |
 | USDC SAC | Stellar system contract | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
 
 To deploy your own trust-registry (optional): `npm run deploy:trust-registry`

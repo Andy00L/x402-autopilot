@@ -46,14 +46,15 @@ export function createStellarX402Server(): x402ResourceServer {
 }
 
 // ---------------------------------------------------------------------------
-// Trust Registry self-registration (optional, fire-and-forget)
+// Trust Registry self-registration with heartbeat + graceful shutdown
 //
 // Calls register_service on the Soroban trust-registry contract.
+// Sets up heartbeat interval (4 min) and SIGTERM/SIGINT handlers.
 // Requires STELLAR_PRIVATE_KEY and TRUST_REGISTRY_CONTRACT_ID.
 // If either is missing, registration is silently skipped.
 // ---------------------------------------------------------------------------
 
-const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1_000; // 5 minutes
+const HEARTBEAT_INTERVAL_MS = 4 * 60 * 1_000; // 4 minutes
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -65,7 +66,7 @@ interface RegistrationResult {
 export async function selfRegister(opts: {
   name: string;
   url: string;
-  capabilities: string[];
+  capability: string;
   priceStroops: bigint;
   protocol: string;
 }): Promise<RegistrationResult | null> {
@@ -97,9 +98,9 @@ export async function selfRegister(opts: {
         contract.call(
           "register_service",
           new Address(publicKey).toScVal(),
-          nativeToScVal(opts.url, { type: "symbol" }),
+          nativeToScVal(opts.url),                       // String (URLs contain :/.)
           nativeToScVal(opts.name, { type: "symbol" }),
-          nativeToScVal(opts.capabilities, { type: "symbol" }), // Vec<Symbol>
+          nativeToScVal(opts.capability, { type: "symbol" }), // Single Symbol
           nativeToScVal(opts.priceStroops, { type: "i128" }),
           nativeToScVal(opts.protocol, { type: "symbol" }),
         ),
@@ -147,18 +148,44 @@ export async function selfRegister(opts: {
 
   console.log(`[${opts.name}] Registered in trust registry (serviceId=${serviceId})`);
 
-  // --- Heartbeat interval ---
+  // --- Heartbeat interval (4 minutes) ---
   const sid = serviceId;
   const intervalId = setInterval(() => {
     sendHeartbeat(server, contract, keypair, passphrase, sid)
+      .then(() => console.log(`[${opts.name}] heartbeat sent`))
       .catch(() => { /* heartbeat failure is non-critical */ });
   }, HEARTBEAT_INTERVAL_MS);
+
+  // --- Graceful shutdown: deregister on SIGTERM/SIGINT ---
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[${opts.name}] ${signal} received, deregistering...`);
+    clearInterval(intervalId);
+    try {
+      await sendDeregister(server, contract, keypair, passphrase, sid);
+      console.log(`[${opts.name}] Deregistered from trust registry`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown";
+      console.error(`[${opts.name}] Deregister failed: ${msg}`);
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 
   return {
     serviceId: sid,
     stopHeartbeat: () => clearInterval(intervalId),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Heartbeat — extends service TTL on-chain
+// v2: only passes service_id (owner read from stored ServiceInfo)
+// ---------------------------------------------------------------------------
 
 async function sendHeartbeat(
   server: rpc.Server,
@@ -175,7 +202,36 @@ async function sendHeartbeat(
     .addOperation(
       contract.call(
         "heartbeat",
-        new Address(keypair.publicKey()).toScVal(),
+        nativeToScVal(serviceId, { type: "u32" }),
+      ),
+    )
+    .setTimeout(30)
+    .build();
+
+  const prepared = await server.prepareTransaction(tx);
+  prepared.sign(keypair);
+  await server.sendTransaction(prepared);
+}
+
+// ---------------------------------------------------------------------------
+// Deregister — removes service from registry, refunds deposit
+// ---------------------------------------------------------------------------
+
+async function sendDeregister(
+  server: rpc.Server,
+  contract: Contract,
+  keypair: Keypair,
+  passphrase: string,
+  serviceId: number,
+): Promise<void> {
+  const account = await server.getAccount(keypair.publicKey());
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  })
+    .addOperation(
+      contract.call(
+        "deregister_service",
         nativeToScVal(serviceId, { type: "u32" }),
       ),
     )

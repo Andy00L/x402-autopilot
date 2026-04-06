@@ -16,8 +16,8 @@ interface CacheEntry {
 const TTL_MS = 2 * 60 * 1_000; // 2 minutes
 const cache = new Map<string, CacheEntry>();
 
-function cacheKey(capability: string | undefined): string {
-  return capability ?? "__all__";
+function cacheKey(capability: string): string {
+  return capability;
 }
 
 function getCached(key: string): ServiceInfo[] | null {
@@ -59,14 +59,15 @@ const facilitatorClient = new HTTPFacilitatorClient({
 /**
  * Discover available paid-API services.
  * Tier 1: x402 Bazaar (centralized index)
- * Tier 2: Soroban Trust Registry (on-chain)
+ * Tier 2: Soroban Trust Registry (on-chain, filtered by capability)
  * Tier 3: Merge, deduplicate, sort by trust score descending
  *
  * Returns cached results if within TTL.
  */
 export async function discoverServices(
-  capability?: string,
-  minScore?: number,
+  capability: string = "weather",
+  minScore: number = 0,
+  limit: number = 10,
 ): Promise<ServiceInfo[]> {
   const key = cacheKey(capability);
   const cached = getCached(key);
@@ -87,16 +88,16 @@ export async function discoverServices(
     // Bazaar down — continue with registry only
   }
 
-  // --- Tier 2: Trust Registry (Soroban) ---
+  // --- Tier 2: Trust Registry (Soroban) — filtered by capability + limit ---
   let registryServices: ServiceInfo[] = [];
   try {
-    registryServices = await registryClient.listServices(capability, minScore ?? 0);
+    registryServices = await registryClient.listServices(capability, minScore, limit);
   } catch {
     // Registry RPC down — use bazaar results with default scores
   }
 
   // --- Tier 3: Merge ---
-  const merged = mergeAndSort(bazaarServices, registryServices, minScore ?? 0);
+  const merged = mergeAndSort(bazaarServices, registryServices, minScore);
   cache.set(key, { services: merged, timestamp: Date.now() });
   return merged;
 }
@@ -110,12 +111,10 @@ function toBazaarServiceInfo(item: Record<string, unknown>): ServiceInfo {
     serviceId: -1, // Not in registry
     name: String(item.name ?? ""),
     url: String(item.url ?? ""),
-    capabilities: [],
+    capability: "",
     priceStroops: 0n,
     protocol: "x402",
     score: 70, // Default score for unverified Bazaar services
-    status: "unverified",
-    lastHeartbeat: 0,
   };
 }
 

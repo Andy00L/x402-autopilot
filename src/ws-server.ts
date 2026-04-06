@@ -1,18 +1,170 @@
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { config } from "./config.js";
-import { eventBus } from "./event-bus.js";
 import { budgetTracker } from "./budget-tracker.js";
+import * as policyClient from "./policy-client.js";
 
-/**
- * Standalone WebSocket server for the dashboard.
- * Attaches to the singleton eventBus so all events are broadcast to connected clients.
- */
+// ---------------------------------------------------------------------------
+// WebSocket server for the dashboard.
+//
+// The MCP server and WS server are separate processes. Events emitted in the
+// MCP process do not reach the WS process. Instead, the WS server polls the
+// Soroban contract (the single source of truth) every 5 seconds and broadcasts
+// changes to connected dashboard clients.
+// ---------------------------------------------------------------------------
+
 const port = config.wsPort;
 const wss = new WebSocketServer({ port });
 
-eventBus.attachWss(wss);
+// BigInt-safe JSON serializer
+function toJson(value: Record<string, unknown>): string {
+  return JSON.stringify(value, (_k: string, v: unknown) =>
+    typeof v === "bigint" ? v.toString() : v,
+  );
+}
 
-// Sync budget on startup (non-blocking)
-budgetTracker.syncFromSoroban().catch(() => {});
+// ---------------------------------------------------------------------------
+// On client connect: send current budget immediately
+// ---------------------------------------------------------------------------
+
+wss.on("connection", (ws: WebSocket) => {
+  sendBudgetToClient(ws).catch(() => {});
+});
+
+async function sendBudgetToClient(ws: WebSocket): Promise<void> {
+  try {
+    await budgetTracker.syncFromSoroban();
+  } catch {
+    // RPC down, send cached/zero data
+  }
+
+  const budget = budgetTracker.getBudget();
+  let lifetimeSpent = 0n;
+  try {
+    const lifetime = await policyClient.getLifetimeStats();
+    lifetimeSpent = lifetime.lifetimeSpent ?? 0n;
+  } catch {
+    // RPC down
+  }
+
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(toJson({
+      event: "budget:updated",
+      data: {
+        spentToday: budget.spentToday,
+        remaining: budget.remaining,
+        dailyLimit: budget.dailyLimit,
+        txCount: budget.txCount,
+        deniedCount: budget.deniedCount,
+        lifetimeSpent,
+      },
+      timestamp: new Date().toISOString(),
+    }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Poll Soroban every 5 seconds, broadcast only on change
+// ---------------------------------------------------------------------------
+
+let prevSpentToday = 0n;
+let prevTxCount = 0;
+let syncing = false;
+
+async function pollAndBroadcast(): Promise<void> {
+  if (syncing) return;
+  syncing = true;
+  try {
+    await budgetTracker.syncFromSoroban();
+  } catch {
+    return; // RPC down, skip this cycle
+  } finally {
+    syncing = false;
+  }
+
+  const budget = budgetTracker.getBudget();
+
+  // Only broadcast if something changed
+  if (budget.spentToday === prevSpentToday && budget.txCount === prevTxCount) {
+    return;
+  }
+
+  // Compute delta for spend event
+  const costDelta = budget.spentToday - prevSpentToday;
+  const countDelta = budget.txCount - prevTxCount;
+
+  prevSpentToday = budget.spentToday;
+  prevTxCount = budget.txCount;
+
+  // Skip if no clients connected
+  if (wss.clients.size === 0) return;
+
+  // Broadcast budget update
+  const budgetMsg = toJson({
+    event: "budget:updated",
+    data: {
+      spentToday: budget.spentToday,
+      remaining: budget.remaining,
+      dailyLimit: budget.dailyLimit,
+      txCount: budget.txCount,
+      deniedCount: budget.deniedCount,
+    },
+    timestamp: new Date().toISOString(),
+  });
+
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(budgetMsg);
+    }
+  }
+
+  // If new transactions detected, broadcast a spend event
+  if (countDelta > 0 && costDelta > 0n) {
+    const spendMsg = toJson({
+      event: "spend:ok",
+      data: {
+        url: "(on-chain)",
+        amount: costDelta,
+        protocol: "unknown",
+        txHash: `poll_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(spendMsg);
+      }
+    }
+  }
+}
+
+const pollInterval = setInterval(() => {
+  pollAndBroadcast().catch(() => {});
+}, 5_000);
+
+// ---------------------------------------------------------------------------
+// Initial sync + startup
+// ---------------------------------------------------------------------------
+
+budgetTracker.syncFromSoroban().then(() => {
+  const budget = budgetTracker.getBudget();
+  prevSpentToday = budget.spentToday;
+  prevTxCount = budget.txCount;
+}).catch(() => {});
 
 console.log(`[WS Server] :${port}`);
+
+// ---------------------------------------------------------------------------
+// Cleanup on exit
+// ---------------------------------------------------------------------------
+
+function shutdown(): void {
+  clearInterval(pollInterval);
+  wss.close(() => process.exit(0));
+  // Force exit after 2s if close hangs
+  setTimeout(() => process.exit(0), 2_000);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

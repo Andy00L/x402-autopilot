@@ -36,7 +36,7 @@ graph TD
 
     subgraph "Stellar Testnet"
         WP[wallet-policy<br>Soroban contract, 8 fn]
-        TR[trust-registry<br>Soroban contract, 8 fn]
+        TR[trust-registry<br>Soroban contract, 7 fn]
         FAC[OZ Facilitator]
         SRPC[Soroban RPC]
     end
@@ -79,7 +79,7 @@ x402-autopilot/
       src/lib.rs                8 pub fn, 353 lines
     trust-registry/
       Cargo.toml                soroban-sdk 22.0.0
-      src/lib.rs                8 pub fn, 351 lines
+      src/lib.rs                7 pub fn
 
   src/                          12 modules, 1831 lines total
     types.ts                    6 error classes, 9 type definitions (149 lines)
@@ -209,7 +209,7 @@ sequenceDiagram
 | Contract | Ownership | Deploy | Functions |
 |----------|-----------|--------|-----------|
 | wallet-policy | Per-user (owner auth on writes) | Each user deploys their own | 8 |
-| trust-registry | Shared (public reads, auth on service management) | Pre-deployed: `CBOWKURDPZZOJRHC7EJWWUKJGCYB7E5U5X2FDJRDYZWYJUAXFAN6DNYM` | 8 |
+| trust-registry | Shared (public reads, auth on service management) | Pre-deployed: `CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ` | 8 |
 
 The wallet-policy requires `owner.require_auth()` for record_spend, record_denied, update_policy, and set_allowlist. Read functions (check_policy, get_today_spending, get_lifetime_stats) are public. Each user must deploy their own instance.
 
@@ -259,18 +259,26 @@ Storage: instance (policy, owner, allowlist) + persistent (spend records, nonces
 
 On-chain directory of paid API services with anti-spam deposits and trust scoring.
 
-**8 functions:**
+**Storage layout:**
+- **Instance:** Admin (Address), UsdcAddr (Address), NextId (u32) -- fixed size, never grows
+- **Temporary:** Service(id) -> ServiceInfo -- auto-expires when TTL reaches 0, TTL extended by heartbeat (180 ledgers)
+- **Persistent:** CapIndex(capability) -> Vec of service IDs, Deposit(id) -> i128
+
+ServiceInfo contains a single `capability: Symbol` (not a Vec), plus `total_reports` and `successful_reports` for trust scoring. No `status` or `heartbeat` fields -- liveness is managed entirely through temporary storage TTL.
+
+**7 functions:**
 
 | Function | Type | Purpose |
 |----------|------|---------|
 | `initialize` | write | Set admin, USDC SAC address |
-| `register_service` | write | Register + deposit 100,000 stroops ($0.01) |
-| `deregister_service` | write | Remove + refund deposit |
-| `heartbeat` | write | Prove service is alive (every ~720 ledgers) |
+| `register_service` | write | Register (url: String, name: Symbol) + deposit 100,000 stroops |
+| `deregister_service` | write | Takes service_id only. Remove + refund deposit |
+| `heartbeat` | write | Takes service_id only. Extends TTL to 180 ledgers, cleans dead entries from CapIndex |
 | `report_quality` | write | Success/fail report (max 1/reporter/service/day) |
-| `list_services` | read | Filter by capability + min trust score |
+| `list_services` | read | Takes (capability, min_score, limit). Scans CapIndex for the capability instead of iterating 0..NextId |
 | `get_service` | read | Get single service info |
-| `check_stale` | write | Permissionless. >720 ledgers = stale, >7200 = removed |
+
+Services auto-expire when their temporary storage TTL reaches 0 (no manual stale checking needed). Data sources send heartbeats every 4 minutes and deregister on graceful shutdown (SIGTERM/SIGINT).
 
 Trust score: `successes * 100 / total_reports`. Default 70 for new services.
 
@@ -305,7 +313,7 @@ Bazaar services not in the registry get default score 70 and "unverified" badge.
 | RPC downtime bypass | Fail-closed: RPC unreachable = payment denied | policy-client.ts |
 | Replay attack | Nonce stored on-chain, duplicates rejected | wallet-policy contract |
 | Nonce overflow | Truncated to 32 chars (Soroban Symbol limit) | autopay.ts |
-| Registry spam | $0.01 USDC deposit, forfeited if service goes stale | trust-registry contract |
+| Registry spam | $0.01 USDC deposit, forfeited if service TTL expires | trust-registry contract |
 | Fake quality reports | Max 1 report per (reporter, service, day) | trust-registry contract |
 | Secret exposure | Private key never exported/logged, masked in errors | config.ts, error paths |
 | Response body consumed twice | .text() once, JSON.parse separately | autopay.ts |

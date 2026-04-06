@@ -101,7 +101,6 @@ export class HealthChecker {
       eventBus.emit("registry:stale", {
         serviceId: service.serviceId,
         name: service.name,
-        lastHeartbeat: service.lastHeartbeat,
       });
     }
   }

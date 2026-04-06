@@ -63,7 +63,7 @@ app.listen(PORT, () => {
   selfRegister({
     name: "weather",
     url: `http://localhost:${PORT}`,
-    capabilities: ["weather"],
+    capability: "weather",
     priceStroops: 10_000n, // $0.001
     protocol: "x402",
   }).catch(() => {});

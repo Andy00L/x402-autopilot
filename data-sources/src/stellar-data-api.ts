@@ -66,9 +66,9 @@ app.listen(PORT, () => {
   console.log(`[Stellar Data API] :${PORT} (MPP charge)`);
 
   selfRegister({
-    name: "stellar-data",
+    name: "stellar_data",
     url: `http://localhost:${PORT}`,
-    capabilities: ["blockchain-data"],
+    capability: "blockchain",
     priceStroops: 20_000n, // $0.002
     protocol: "mpp",
   }).catch(() => {});

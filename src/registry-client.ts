@@ -22,7 +22,7 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
-// Soroban read helper
+// Soroban read helper (simulate only — free, fast)
 // ---------------------------------------------------------------------------
 
 async function simulateContract(
@@ -75,7 +75,7 @@ async function simulateContract(
 }
 
 // ---------------------------------------------------------------------------
-// Soroban write helper
+// Soroban write helper (build, prepare, sign, send, poll)
 // ---------------------------------------------------------------------------
 
 async function invokeContract(
@@ -148,7 +148,7 @@ async function invokeContract(
 }
 
 // ---------------------------------------------------------------------------
-// Convert raw Soroban SvcInfo to our ServiceInfo type
+// Convert raw Soroban ServiceInfo to our TypeScript ServiceInfo
 // ---------------------------------------------------------------------------
 
 function toServiceInfo(raw: Record<string, unknown>): ServiceInfo {
@@ -156,12 +156,10 @@ function toServiceInfo(raw: Record<string, unknown>): ServiceInfo {
     serviceId: Number(raw.id ?? 0),
     name: String(raw.name ?? ""),
     url: String(raw.url ?? ""),
-    capabilities: Array.isArray(raw.caps) ? (raw.caps as unknown[]).map(String) : [],
+    capability: String(raw.capability ?? ""),
     priceStroops: typeof raw.price === "bigint" ? raw.price : BigInt(String(raw.price ?? "0")),
     protocol: String(raw.protocol ?? ""),
     score: Number(raw.score ?? 70),
-    status: String(raw.status ?? "unknown"),
-    lastHeartbeat: Number(raw.heartbeat ?? 0),
   };
 }
 
@@ -170,18 +168,18 @@ function toServiceInfo(raw: Record<string, unknown>): ServiceInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * List services filtered by capability and minimum trust score.
+ * List services filtered by capability, minimum trust score, and limit.
+ * Uses simulate (read-only in TS). Heartbeat handles CapIndex cleanup.
  */
 export async function listServices(
-  capability?: string,
-  minScore?: number,
+  capability: string,
+  minScore: number = 0,
+  limit: number = 10,
 ): Promise<ServiceInfo[]> {
-  const capSymbol = capability ?? "weather";
-  const score = minScore ?? 0;
-
   const result = await simulateContract("list_services", [
-    nativeToScVal(capSymbol, { type: "symbol" }),
-    nativeToScVal(score, { type: "u32" }),
+    nativeToScVal(capability, { type: "symbol" }),
+    nativeToScVal(minScore, { type: "u32" }),
+    nativeToScVal(limit, { type: "u32" }),
   ]);
 
   if (!Array.isArray(result)) return [];
@@ -213,11 +211,20 @@ export function reportQuality(serviceId: number, success: boolean): void {
 }
 
 /**
- * Send heartbeat for a service.
+ * Send heartbeat for a service. Only takes service_id;
+ * the contract reads the owner from stored ServiceInfo.
  */
 export async function heartbeat(serviceId: number): Promise<void> {
   await invokeContract("heartbeat", [
-    new Address(config.stellarPublicKey).toScVal(),
+    nativeToScVal(serviceId, { type: "u32" }),
+  ]);
+}
+
+/**
+ * Deregister a service. Removes from temporary + CapIndex, refunds deposit.
+ */
+export async function deregister(serviceId: number): Promise<void> {
+  await invokeContract("deregister_service", [
     nativeToScVal(serviceId, { type: "u32" }),
   ]);
 }
