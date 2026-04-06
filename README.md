@@ -165,7 +165,7 @@ Add to your Claude Desktop MCP settings:
 
 | Tool | Description |
 |------|-------------|
-| `autopilot_pay_and_fetch` | Pay for and fetch data from any x402 or MPP endpoint |
+| `autopilot_pay_and_fetch` | Pay for and fetch data from any x402 or MPP endpoint. Supports GET (default) and POST with JSON body. |
 | `autopilot_research` | Auto-discover services by capability, fetch from multiple sources |
 | `autopilot_check_budget` | Read on-chain spending status (Soroban source of truth) |
 | `autopilot_discover` | List available paid APIs from Bazaar, trust registry, and xlm402.com |

@@ -40,9 +40,25 @@ const mutex = new AsyncMutex();
  * 17. Report quality (fire-and-forget)
  * 18. Return result
  */
-export async function autopilotFetch(url: string): Promise<AutopilotResult> {
+export interface FetchOptions {
+  method?: string;
+  body?: unknown;
+}
+
+export async function autopilotFetch(
+  url: string,
+  options?: FetchOptions,
+): Promise<AutopilotResult> {
   // Step 1: SSRF validation
   validateUrl(url);
+
+  // Build RequestInit from options (method defaults to GET, no body on GET)
+  const method = (options?.method ?? "GET").toUpperCase();
+  const fetchInit: RequestInit = { method };
+  if (options?.body !== undefined && method !== "GET") {
+    fetchInit.body = JSON.stringify(options.body);
+    fetchInit.headers = { "Content-Type": "application/json" };
+  }
 
   // Step 2: Sequential payment execution
   await mutex.acquire(30_000);
@@ -61,7 +77,7 @@ export async function autopilotFetch(url: string): Promise<AutopilotResult> {
     // Some servers (e.g. xlm402.com) return 200 on HEAD but 402 on GET.
     // If the GET returns 402, re-detect from the response and fall through to payment.
     if (protocol === "free") {
-      const freeResponse = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      const freeResponse = await fetch(url, { ...fetchInit, signal: AbortSignal.timeout(10_000) });
       if (freeResponse.status !== 402) {
         const text = await freeResponse.text();
         let data: unknown;
@@ -115,9 +131,9 @@ export async function autopilotFetch(url: string): Promise<AutopilotResult> {
     // Step 9: Execute payment + fetch
     let response: Response;
     if (protocol === "x402") {
-      response = await executeX402(url);
+      response = await executeX402(url, fetchInit);
     } else {
-      response = await executeMpp(url);
+      response = await executeMpp(url, fetchInit);
     }
 
     // Step 10: Read body ONCE (CLAUDE.md Rule 3)
@@ -214,9 +230,10 @@ export async function autopilotFetch(url: string): Promise<AutopilotResult> {
 // x402 payment execution
 // ---------------------------------------------------------------------------
 
-async function executeX402(url: string): Promise<Response> {
+async function executeX402(url: string, init: RequestInit): Promise<Response> {
   try {
     const response = await x402Fetch(url, {
+      ...init,
       signal: AbortSignal.timeout(10_000),
     });
     return response;
@@ -233,12 +250,13 @@ async function executeX402(url: string): Promise<Response> {
 // The SDK handles the full 402 challenge-response-credential cycle.
 // ---------------------------------------------------------------------------
 
-async function executeMpp(url: string): Promise<Response> {
+async function executeMpp(url: string, init: RequestInit): Promise<Response> {
   try {
-    // mppFetch handles: initial GET -> 402 challenge -> build credential
+    // mppFetch handles: initial request -> 402 challenge -> build credential
     // -> sign SAC transfer -> retry with Authorization header -> 200 + data
     // Timeout is generous because MPP involves on-chain TX confirmation.
     const response = await mppFetch(url, {
+      ...init,
       signal: AbortSignal.timeout(60_000),
     });
     return response;

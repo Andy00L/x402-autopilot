@@ -86,11 +86,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "autopilot_pay_and_fetch",
       description:
-        "Pay for and fetch data from an x402 or MPP endpoint. Protocol is detected automatically. Spending is enforced by on-chain policy.",
+        "Pay for and fetch data from an x402 or MPP endpoint. Supports GET (default) and POST with JSON body. Protocol is detected automatically.",
       inputSchema: {
         type: "object" as const,
         properties: {
           url: { type: "string", description: "URL of the paid endpoint" },
+          method: {
+            type: "string",
+            description: "HTTP method. Default GET.",
+            enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          },
+          body: {
+            type: "object",
+            description: "Request body for POST/PUT/PATCH. Sent as JSON.",
+          },
         },
         required: ["url"],
       },
@@ -215,7 +224,9 @@ async function handlePayAndFetch(
     const url = String(args.url ?? "");
     if (!url) return fail(new Error("Missing required parameter: url"));
 
-    const result: AutopilotResult = await autopilotFetch(url);
+    const method = typeof args.method === "string" ? args.method : undefined;
+    const body = args.body;
+    const result: AutopilotResult = await autopilotFetch(url, { method, body });
     const budget = budgetTracker.getBudget();
 
     return ok({
