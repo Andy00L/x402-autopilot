@@ -2,7 +2,7 @@
 
 ## System overview
 
-x402 Autopilot is an autonomous payment engine for AI agents on Stellar. Claude connects via MCP, discovers paid APIs through a 3-tier pipeline (Bazaar, on-chain trust registry, xlm402.com), pays with USDC micropayments, and tracks spending against on-chain Soroban policy contracts. An analyst agent demonstrates agent-to-agent payments by earning money from the main agent and spending money to buy data from other services.
+x402 Autopilot is an autonomous payment engine for AI agents on Stellar. Claude connects via MCP, discovers paid APIs through a 3-tier pipeline (Bazaar, on-chain trust registry, xlm402.com), pays with USDC micropayments, and tracks spending against on-chain Soroban policy contracts. An analyst agent demonstrates agent-to-agent payments by earning money from the main agent and spending money to buy data from other services. A CLI dashboard manages all processes and shows live status.
 
 ## Component diagram
 
@@ -10,15 +10,16 @@ x402 Autopilot is an autonomous payment engine for AI agents on Stellar. Claude 
 flowchart TD
     subgraph Interface
         CC["Claude Desktop"]
-        DASH["React Dashboard :5173"]
+        CLI["CLI Dashboard<br/>ANSI terminal"]
+        DASH["Web Dashboard<br/>:5173 React"]
     end
 
-    subgraph MCP["MCP Server - 453 lines"]
+    subgraph MCP["MCP Server - 464 lines"]
         MCPS["index.ts<br/>6 tools, stdio transport"]
     end
 
-    subgraph Core["Core Engine - 13 modules, 2156 lines"]
-        AP["autopay.ts<br/>308 lines"]
+    subgraph Core["Core Engine - 13 modules, 2174 lines"]
+        AP["autopay.ts<br/>326 lines"]
         SEC["security.ts<br/>SSRF, rate limit"]
         PD["protocol-detector.ts<br/>HEAD probe"]
         PC["policy-client.ts<br/>Soroban RPC"]
@@ -27,9 +28,10 @@ flowchart TD
         DC["discovery.ts<br/>3-tier pipeline"]
         EB["event-bus.ts<br/>WebSocket broadcast"]
         MX["mutex.ts<br/>sequential lock"]
+        WS["ws-server.ts<br/>polls Soroban"]
     end
 
-    subgraph Sources["Data Sources - 5 files, 702 lines"]
+    subgraph Sources["Data Sources - 5 files, 857 lines"]
         W["Weather :4001<br/>x402 $0.001"]
         N["News :4002<br/>x402 $0.001"]
         S["Stellar Data :4003<br/>MPP $0.002"]
@@ -67,8 +69,15 @@ flowchart TD
     AN --> W
     AN --> N
     AN --> LLM["Claude LLM"]
-    AP -->|WebSocket| EB
-    EB --> DASH
+    WS -->|polls| WP
+    CLI -->|WebSocket| WS
+    DASH -->|WebSocket| WS
+    CLI -->|spawns| W
+    CLI -->|spawns| N
+    CLI -->|spawns| S
+    CLI -->|spawns| AN
+    CLI -->|spawns| WS
+    CLI -->|spawns| DASH
 ```
 
 ## Payment flow: x402
@@ -228,9 +237,11 @@ flowchart TD
 - **Temporary:** Service(id) maps to ServiceInfo. Auto-expires when TTL reaches 0. Heartbeat extends to 180 ledgers (~15 min).
 - **Persistent:** CapIndex(capability) maps to Vec of service IDs. DepositRecord(id) stores owner + amount for refund.
 
+**Registration re-entry:** On restart, shared.ts calls `listServices` before `register_service`. If the previous registration is still alive (TTL > 0), the existing service ID is reused and heartbeat resumes. This avoids the "duplicate URL" panic from the contract.
+
 **Cleanup flows:**
-- Graceful shutdown: service calls deregister, removed immediately from index and temporary storage, deposit refunded.
-- Crash: no deregister call. TTL counts down. At TTL 0, Soroban deletes the entry. Next heartbeat from a live service in the same capability cleans the dead ID from CapIndex. Deposit reclaimable by owner via reclaim_deposit.
+- Graceful shutdown: service calls deregister, removed immediately, deposit refunded.
+- Crash: no deregister. TTL counts down. At TTL 0, Soroban deletes the entry. Next heartbeat from a live service in the same capability cleans the dead ID from CapIndex. Deposit reclaimable by owner via reclaim_deposit.
 
 ## Wallet policy contract
 
@@ -285,48 +296,75 @@ stateDiagram-v2
 | `report_quality` | write | Success/fail report, max 1 per reporter per service per day |
 | `reclaim_deposit` | write | Reclaim deposit after service TTL expires (crash recovery) |
 
+## CLI dashboard
+
+The CLI dashboard (`scripts/cli-dashboard.ts`, 468 lines) replaces `concurrently` as the process manager. It uses pure ANSI escape codes for rendering (no TUI library dependencies).
+
+**Process management:**
+- Spawns 6 processes: ws-server, weather, news, stellar-data, analyst, vite dashboard
+- Each child spawned with `detached: true` (process group leader)
+- On shutdown, kills entire process groups with `process.kill(-pid, "SIGTERM")`
+- On startup, frees ports 4001-4004, 5173-5175, 8080 with `fuser -k`
+- Does NOT spawn MCP server (it uses stdio transport for Claude Desktop)
+
+**Terminal rendering:**
+- Alternative screen buffer (`\x1b[?1049h` / `\x1b[?1049l`)
+- Cursor home + line overwrite each second (no flicker)
+- Hidden cursor during render, restored on exit (including crash via uncaughtException)
+
+**Live data:**
+- WebSocket client connects to ws-server :8080 for budget events
+- Parses `budget:updated` and `spend:ok` events from ws-server's Soroban polling
+- Heartbeat timestamps updated from child stdout parsing
+
+**Logging:**
+- All child stdout/stderr written to `logs/YYYY-MM-DD_HH-mm-ss.log`
+- ANSI codes stripped before parsing, preserved in log file
+- Heartbeat lines logged but not printed to terminal (only counter updates)
+
 ## File breakdown
 
 ```
 contracts/
-  wallet-policy/src/lib.rs        353 lines, 8 pub fn
-  trust-registry/src/lib.rs       426 lines, 8 pub fn
+  wallet-policy/src/lib.rs          353 lines, 8 pub fn
+  trust-registry/src/lib.rs         426 lines, 8 pub fn
 
-src/                              2156 lines total
-  autopay.ts                      308 lines  orchestrator
-  policy-client.ts                316 lines  Soroban RPC for wallet-policy
-  discovery.ts                    231 lines  3-tier discovery pipeline
-  registry-client.ts              230 lines  Soroban RPC for trust-registry
-  protocol-detector.ts            201 lines  HEAD probe, x402 v2 + MPP parsing
-  ws-server.ts                    170 lines  WebSocket + polling server
-  types.ts                        147 lines  6 error classes, 9 types
-  config.ts                       132 lines  env validation, x402 + mppx clients
-  security.ts                     117 lines  SSRF prevention, rate limiter
-  health-checker.ts               110 lines  periodic probes
-  budget-tracker.ts                88 lines  BigInt local cache
-  event-bus.ts                     65 lines  WebSocket broadcast
-  mutex.ts                         41 lines  sequential payment lock
+src/                                2174 lines total
+  autopay.ts                        326 lines  orchestrator
+  policy-client.ts                  316 lines  Soroban RPC for wallet-policy
+  discovery.ts                      231 lines  3-tier discovery pipeline
+  registry-client.ts                230 lines  Soroban RPC for trust-registry
+  protocol-detector.ts              201 lines  HEAD probe, x402 v2 + MPP parsing
+  ws-server.ts                      170 lines  WebSocket + Soroban polling
+  types.ts                          147 lines  6 error classes, 9 types
+  config.ts                         132 lines  env validation, x402 + mppx clients
+  security.ts                       117 lines  SSRF prevention, rate limiter
+  health-checker.ts                 110 lines  periodic probes
+  budget-tracker.ts                  88 lines  BigInt local cache
+  event-bus.ts                       65 lines  WebSocket broadcast
+  mutex.ts                           41 lines  sequential payment lock
 
-data-sources/src/                 702 lines total
-  shared.ts                       244 lines  x402 server factory, registration
-  analyst-api.ts                  231 lines  agent-to-agent
-  news-api.ts                      82 lines  x402 paywall
-  stellar-data-api.ts              75 lines  MPP paywall
-  weather-api.ts                   70 lines  x402 paywall
+data-sources/src/                   857 lines total
+  shared.ts                         346 lines  x402 server, registration, heartbeat
+  analyst-api.ts                    284 lines  agent-to-agent
+  news-api.ts                        82 lines  x402 paywall
+  stellar-data-api.ts                75 lines  MPP paywall
+  weather-api.ts                     70 lines  x402 paywall
 
 mcp-server/src/
-  index.ts                        453 lines  6 tools, stdio transport
+  index.ts                          464 lines  6 tools, stdio transport
 
-dashboard/src/                    693 lines total
-  App.tsx                         543 lines  5 panels, dark theme
-  hooks/useWebSocket.ts           140 lines  auto-reconnect, backoff
-  main.tsx                          9 lines  React root
+dashboard/src/                      693 lines total
+  App.tsx                           543 lines  5 panels, dark theme
+  hooks/useWebSocket.ts             140 lines  auto-reconnect, backoff
+  main.tsx                            9 lines  React root
 
-scripts/                          429 lines total
-  seed-registry.ts                121 lines
-  run-demo.ts                     118 lines
-  setup-testnet.ts                104 lines
-  health-report.ts                 86 lines
+scripts/                            897 lines total
+  cli-dashboard.ts                  468 lines  ANSI terminal dashboard
+  seed-registry.ts                  121 lines  register demo services
+  run-demo.ts                       118 lines  full demo flow
+  setup-testnet.ts                  104 lines  fund wallet, add USDC trustline
+  health-report.ts                   86 lines  CLI health check table
 ```
 
 ## Security model
@@ -343,20 +381,18 @@ scripts/                          429 lines total
 | Secret exposure | Private key never exported or logged, masked in errors | config.ts |
 | Response body consumed twice | .text() once, JSON.parse separately | autopay.ts |
 | HEAD 200 but GET 402 | Re-classify response, fall through to payment | autopay.ts |
+| Leftover ports on restart | killPorts frees all service ports on startup | cli-dashboard.ts |
 
 ## Dashboard events
 
-Events emitted via WebSocket from the core engine. BigInt fields serialized to strings.
+Events broadcast via WebSocket from ws-server. BigInt fields serialized to strings.
 
-| Event | Source | Panel |
-|-------|--------|-------|
-| `spend:ok` | autopay.ts | Transaction log |
-| `spend:api_error` | autopay.ts | Transaction log |
-| `spend:failed` | autopay.ts | Transaction log |
-| `denied` | autopay.ts | Denied panel |
-| `budget:updated` | budget-tracker.ts | Budget panel |
-| `health:checked` | health-checker.ts | Health monitor |
-| `registry:stale` | health-checker.ts | Health monitor |
+| Event | Source | Content |
+|-------|--------|---------|
+| `budget:updated` | ws-server polling | spentToday, remaining, dailyLimit, txCount |
+| `spend:ok` | ws-server polling | url, amount, protocol, txHash |
+
+The ws-server polls the wallet-policy Soroban contract every 5 seconds. When spentToday or txCount changes, it broadcasts to all connected WebSocket clients (web dashboard and CLI dashboard).
 
 ## Design decisions
 
@@ -370,6 +406,10 @@ Events emitted via WebSocket from the core engine. BigInt fields serialized to s
 
 **2-minute discovery cache.** Querying Soroban for every discover call takes 2-3 seconds. The cache balances freshness with latency. On payment failure, the specific service is invalidated immediately.
 
-**Temporary storage for services.** Services auto-expire when TTL reaches 0. No manual stale checking. Living services clean dead entries from the capability index during heartbeat. This prevents the instance storage DoS vector (Veridise, Palta Labs) and removes the need for any manual stale-checking function.
+**Temporary storage for services.** Services auto-expire when TTL reaches 0. No manual stale checking. Living services clean dead entries from the capability index during heartbeat. This prevents the instance storage DoS vector (Veridise, Palta Labs).
 
-**Analyst as a real agent.** The analyst has its own wallet, its own x402 client, and makes autonomous economic decisions (which data to buy, how much to spend). This distinguishes it from a simple proxy or cache. The economics breakdown (earned, spent, profit) is visible in every response.
+**Analyst as a real agent.** The analyst has its own wallet, its own x402 client, and makes autonomous economic decisions (which data to buy, how much to spend). The economics breakdown (earned, spent, profit) is visible in every response.
+
+**CLI dashboard over concurrently.** The ANSI dashboard provides a fixed-layout view of all services instead of scrolling log output. Process groups with negative PID kill ensure clean shutdown. Port cleanup on startup handles interrupted previous sessions.
+
+**Registration re-entry.** shared.ts calls listServices before register_service. If the URL is already registered (TTL still alive from a previous session), the existing service ID is reused. This prevents the "duplicate URL" contract panic on restart.

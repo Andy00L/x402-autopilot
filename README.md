@@ -15,6 +15,7 @@ The system supports both the x402 protocol (Coinbase/OZ) and the MPP charge prot
 ```mermaid
 flowchart TD
     Claude["Claude Desktop"] -->|MCP stdio| MCP["MCP Server<br/>6 tools"]
+    CLI["CLI Dashboard<br/>ANSI terminal"] -->|WebSocket| WS["ws-server<br/>:8080"]
 
     MCP --> AP["autopay.ts<br/>orchestrator"]
     AP --> PD["Protocol Detector<br/>HEAD probe"]
@@ -23,8 +24,7 @@ flowchart TD
     AP --> MPP["MPP Client<br/>mppx SDK"]
 
     PC --> WP["Wallet Policy<br/>8 functions"]
-    AP --> BT["Budget Tracker"]
-    BT -->|WebSocket| DASH["Dashboard :5173"]
+    WS -->|polls Soroban| WP
 
     X4 --> W1["Weather API<br/>:4001 x402"]
     X4 --> N1["News API<br/>:4002 x402"]
@@ -38,6 +38,13 @@ flowchart TD
 
     AP --> DC["Discovery<br/>3-tier pipeline"]
     DC --> TR["Trust Registry<br/>8 functions"]
+
+    CLI -->|spawns + monitors| W1
+    CLI -->|spawns + monitors| N1
+    CLI -->|spawns + monitors| SD
+    CLI -->|spawns + monitors| AN
+    CLI -->|spawns + monitors| WS
+    CLI -->|spawns| VITE["Web Dashboard<br/>:5173"]
 ```
 
 ## How it works
@@ -136,6 +143,19 @@ The trust registry is shared. When any developer registers a service, all users 
 
 **Why two setup paths?** The wallet-policy contract uses `owner.require_auth()` for spending operations. Only your key can authorize spending from your policy, so you must deploy your own. The trust-registry is a shared public directory, pre-deployed and reusable by everyone.
 
+## CLI Dashboard
+
+`npm run dev` launches a zero-dependency ANSI terminal dashboard that replaces noisy concurrently output. It spawns all services (ws-server, weather, news, stellar-data, analyst, web dashboard) and shows a fixed-layout display that updates every second:
+
+- Service status: green/yellow/red dots with heartbeat counters
+- Live budget: progress bar, spent/limit, transaction count (via WebSocket to ws-server)
+- Last transaction: service name, cost, time ago
+- All verbose output goes to a timestamped log file in `logs/`
+
+Press `q` or Ctrl+C to quit. The dashboard kills all process groups, frees ports, and restores the terminal. On restart, leftover ports from a previous session are cleaned automatically.
+
+The MCP server is NOT spawned by the dashboard. It connects to Claude Desktop via stdio and is configured separately in your MCP settings.
+
 ## MCP configuration
 
 Add to your Claude Desktop MCP settings:
@@ -189,31 +209,36 @@ The analyst agent has its own wallet. It earns $0.005 per analysis and spends $0
 ```
 stelos/
   contracts/
-    wallet-policy/src/lib.rs      8 functions, 353 lines
-    trust-registry/src/lib.rs     8 functions, 426 lines
-  src/                            13 modules, 2156 lines
-    autopay.ts                    308 lines, payment orchestrator
-    policy-client.ts              316 lines, Soroban RPC for wallet-policy
-    discovery.ts                  231 lines, 3-tier pipeline
-    registry-client.ts            230 lines, Soroban RPC for trust-registry
-    protocol-detector.ts          201 lines, HEAD probe + header parsing
-    config.ts                     132 lines, env validation + x402/mppx clients
-    types.ts                      147 lines, 6 error classes + 9 type defs
-    security.ts                   117 lines, SSRF prevention + rate limiter
-    health-checker.ts             110 lines, periodic probes
-    budget-tracker.ts             88 lines, BigInt local cache
-    event-bus.ts                  65 lines, WebSocket broadcast
-    ws-server.ts                  170 lines, WebSocket + polling server
-    mutex.ts                      41 lines, sequential payment lock
-  data-sources/src/               5 files, 702 lines
-    shared.ts                     244 lines, x402 server factory + registration
-    analyst-api.ts                231 lines, agent-to-agent
-    news-api.ts                   82 lines
-    stellar-data-api.ts           75 lines
-    weather-api.ts                70 lines
-  mcp-server/src/index.ts         453 lines, 6 tools
-  dashboard/src/                  693 lines, React + Vite + WebSocket
-  scripts/                        4 TS scripts, 429 lines
+    wallet-policy/src/lib.rs        8 functions, 353 lines
+    trust-registry/src/lib.rs       8 functions, 426 lines
+  src/                              13 modules, 2174 lines
+    autopay.ts                      326 lines, payment orchestrator
+    policy-client.ts                316 lines, Soroban RPC for wallet-policy
+    discovery.ts                    231 lines, 3-tier pipeline
+    registry-client.ts              230 lines, Soroban RPC for trust-registry
+    protocol-detector.ts            201 lines, HEAD probe + header parsing
+    ws-server.ts                    170 lines, WebSocket + Soroban polling
+    types.ts                        147 lines, 6 error classes + 9 type defs
+    config.ts                       132 lines, env validation + x402/mppx clients
+    security.ts                     117 lines, SSRF prevention + rate limiter
+    health-checker.ts               110 lines, periodic probes
+    budget-tracker.ts                88 lines, BigInt local cache
+    event-bus.ts                     65 lines, WebSocket broadcast
+    mutex.ts                         41 lines, sequential payment lock
+  data-sources/src/                 5 files, 857 lines
+    shared.ts                       346 lines, x402 server + registration + heartbeat
+    analyst-api.ts                  284 lines, agent-to-agent
+    news-api.ts                      82 lines
+    stellar-data-api.ts              75 lines
+    weather-api.ts                   70 lines
+  mcp-server/src/index.ts          464 lines, 6 tools
+  dashboard/src/                    693 lines, React + Vite + WebSocket
+  scripts/                          5 files, 897 lines
+    cli-dashboard.ts                468 lines, ANSI terminal dashboard
+    seed-registry.ts                121 lines
+    run-demo.ts                     118 lines
+    setup-testnet.ts                104 lines
+    health-report.ts                 86 lines
 ```
 
 ## Tech stack
@@ -229,7 +254,8 @@ stelos/
 | Stellar SDK | @stellar/stellar-sdk | 14.5.0 |
 | MCP server | @modelcontextprotocol/sdk | 1.0.0 |
 | Data sources | Express | 4.21.0 |
-| Dashboard | React + Vite | 18 / 5 |
+| Web dashboard | React + Vite | 18.3 / 5.4 |
+| CLI dashboard | Node.js built-ins + ws | zero new deps |
 | Network | Stellar testnet | soroban-testnet.stellar.org |
 
 ## Contracts on testnet
@@ -279,6 +305,10 @@ stelos/
 | 14 | HEAD returns 200, GET returns 402 | Re-classify on 402, fall through to payment | autopay.ts |
 | 15 | xlm402.com down | Discovery degrades, Tier 1+2 still work | discovery.ts |
 | 16 | Response body read twice | .text() once, JSON.parse separately | autopay.ts |
+| 17 | Restart within TTL window | listServices before register, reuse existing ID | shared.ts |
+| 18 | Claude binary not in PATH | findClaudeBinary checks common locations at startup | analyst-api.ts |
+| 19 | Leftover ports from previous run | killPorts on startup frees 8080, 4001-4004, 5173+ | cli-dashboard.ts |
+| 20 | Child processes survive parent exit | detached process groups, kill with negative PID | cli-dashboard.ts |
 
 ## What makes this different
 
@@ -291,8 +321,9 @@ Most x402 demos show a single fetch call with a hardcoded URL. This project adds
 - **Anti-spam deposits.** $0.01 USDC to register, refunded on deregister, reclaimable after TTL expiry.
 - **Fail-closed security.** If Soroban RPC is down, payment is denied.
 - **Real external payments.** Agent pays xlm402.com (21 testnet endpoints), USDC moves to a wallet we do not control.
+- **CLI dashboard.** Zero-dependency ANSI terminal with live service status, budget, and transaction tracking.
 
-**Tradeoffs:** Testnet Soroban transactions take 5-15 seconds. The mutex serializes payments, so concurrent requests queue. In the demo, weather/news/stellar-data wallets reuse the agent address (self-transfer). The analyst agent and xlm402.com have separate wallets, showing real USDC movement.
+**Tradeoffs:** Testnet Soroban transactions take 5-15 seconds. The mutex serializes payments, so concurrent requests queue. In the demo, weather/news/stellar-data wallets reuse the agent address (self-transfer). The analyst agent and xlm402.com have separate wallets, showing real USDC movement. The claude -p headless mode for the analyst may conflict with an active Claude Code session using the same terminal.
 
 ## Hackathon tags (9/9)
 

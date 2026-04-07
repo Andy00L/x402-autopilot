@@ -66,6 +66,8 @@ const services: SvcState[] = [
 let budget = { spent: 0, limit: 5_000_000, txCount: 0 };
 let lastTx: TxInfo | null = null;
 let logPath = "";
+let dashboardUrl = "http://localhost:5173";
+let wsConnected = false;
 const startedAt = Date.now();
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,12 @@ function parseOutput(name: string, rawLine: string): void {
     svc.status = "online";
   }
 
+  // Extract Vite's actual URL (may use alternate port if 5173 is taken)
+  if (name === "vite" && line.includes("Local:")) {
+    const urlMatch = line.match(/http:\/\/localhost:\d+/);
+    if (urlMatch) dashboardUrl = urlMatch[0];
+  }
+
   // Heartbeat (silent, just update timestamp)
   if (line.toLowerCase().includes("heartbeat")) {
     svc.lastHB = Date.now();
@@ -152,9 +160,9 @@ function parseOutput(name: string, rawLine: string): void {
 const children: ChildProcess[] = [];
 const root = process.cwd();
 
-function spawnSvc(name: string, cmd: string, args: string[]): void {
+function spawnSvc(name: string, cmd: string, args: string[], cwd?: string): void {
   const proc = spawn(cmd, args, {
-    cwd: root,
+    cwd: cwd ?? root,
     env: { ...process.env, FORCE_COLOR: "0" },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,  // Process group leader for clean kill
@@ -208,6 +216,7 @@ function connectWebSocket(): void {
 
       socket.on("open", () => {
         ws = socket;
+        wsConnected = true;
         log("dashboard", "WebSocket connected to ws-server :8080");
       });
 
@@ -220,6 +229,7 @@ function connectWebSocket(): void {
 
       socket.on("close", () => {
         ws = null;
+        wsConnected = false;
         wsReconnectTimer = setTimeout(connect, 3_000);
       });
 
@@ -330,9 +340,20 @@ function render(): void {
   for (const svc of services) {
     const dot = statusDot(svc.status);
     const hb = svc.lastHB ? `  ${A.gray}\u2665 ${fmtAgo(svc.lastHB)}` : "";
-    const proto = svc.protocol ? `${A.gray}${svc.protocol.padEnd(5)}` : "     ";
-    const price = svc.price ? `${A.gray}${svc.price.padEnd(8)}` : "        ";
-    o += ln(`  ${dot} ${A.white}${svc.label.padEnd(14)} ${A.gray}:${svc.port}  ${proto} ${price}${hb}`);
+
+    // Special rendering for WS Server and Dashboard
+    if (svc.name === "engine") {
+      const wsStatus = wsConnected
+        ? `${A.green}connected${A.reset}`
+        : `${A.yellow}connecting...${A.reset}`;
+      o += ln(`  ${dot} ${A.white}${svc.label.padEnd(14)} ${A.gray}:${svc.port}  ${wsStatus}`);
+    } else if (svc.name === "vite") {
+      o += ln(`  ${dot} ${A.white}${svc.label.padEnd(14)} ${A.cyan}${dashboardUrl}${A.reset}`);
+    } else {
+      const proto = svc.protocol ? `${A.gray}${svc.protocol.padEnd(5)}` : "     ";
+      const price = svc.price ? `${A.gray}${svc.price.padEnd(8)}` : "        ";
+      o += ln(`  ${dot} ${A.white}${svc.label.padEnd(14)} ${A.gray}:${svc.port}  ${proto} ${price}${hb}`);
+    }
   }
   o += ln(sep);
 
@@ -413,7 +434,7 @@ function main(): void {
   spawnSvc("news",    "npx", ["tsx", "data-sources/src/news-api.ts"]);
   spawnSvc("stellar", "npx", ["tsx", "data-sources/src/stellar-data-api.ts"]);
   spawnSvc("analyst", "npx", ["tsx", "data-sources/src/analyst-api.ts"]);
-  spawnSvc("vite",    "npx", ["vite", "--config", "dashboard/vite.config.ts"]);
+  spawnSvc("vite",    "npx", ["vite", "dashboard", "--host"]);
 
   // FIX 3: Connect to ws-server for live budget events
   connectWebSocket();
