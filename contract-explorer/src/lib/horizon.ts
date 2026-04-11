@@ -49,29 +49,79 @@ export function amountToStroops(amount: string): bigint {
 }
 
 /**
- * Normalise a raw EventSource payload into our local HorizonPayment shape.
- * Returns null if the payload is not a "payment" type or the amount is
- * missing / malformed. Callers must additionally check the asset_code
- * before acting on the result (see `HorizonPaymentStore.isUsdcByCode`).
+ * Normalise a raw EventSource payload (from /accounts/{addr}/operations)
+ * into our local HorizonPayment shape.
+ *
+ * Returns either:
+ *   - one HorizonPayment for a classic `type === "payment"` operation, or
+ *   - one HorizonPayment per USDC `transfer` entry inside the
+ *     `asset_balance_changes` array of an `invoke_host_function` op
+ *     (Soroban SAC transfers), or
+ *   - an empty array if the operation has nothing relevant
+ *
+ * Returning an array keeps the call site in `horizon-payment-store.ts`
+ * uniform: a single Soroban op with two USDC transfers (e.g. an analyst
+ * paying two upstream services in one tx) yields two distinct HorizonPayment
+ * records, each with its own `from`/`to`/`amount`. Callers must still check
+ * the asset code before acting on each result.
  */
-export function normalisePayment(raw: unknown): HorizonPayment | null {
-  if (typeof raw !== "object" || raw === null) return null;
+export function normalisePayment(raw: unknown): HorizonPayment[] {
+  if (typeof raw !== "object" || raw === null) return [];
   const r = raw as Record<string, unknown>;
-  if (r.type !== "payment") return null;
-  if (typeof r.amount !== "string") return null;
-  return {
-    id: String(r.id ?? ""),
-    pagingToken: String(r.paging_token ?? ""),
-    type: String(r.type),
-    from: String(r.from ?? r.source_account ?? ""),
-    to: String(r.to ?? ""),
-    amount: String(r.amount),
-    assetType: String(r.asset_type ?? ""),
-    assetCode:
-      typeof r.asset_code === "string" ? (r.asset_code as string) : undefined,
-    assetIssuer:
-      typeof r.asset_issuer === "string" ? (r.asset_issuer as string) : undefined,
-    createdAt: String(r.created_at ?? ""),
-    transactionHash: String(r.transaction_hash ?? ""),
-  };
+  const opId = String(r.id ?? "");
+  const pagingToken = String(r.paging_token ?? "");
+  const createdAt = String(r.created_at ?? "");
+  const txHash = String(r.transaction_hash ?? "");
+  const opType = typeof r.type === "string" ? r.type : "";
+
+  // Classic payment operation
+  if (opType === "payment" && typeof r.amount === "string") {
+    return [{
+      id: opId,
+      pagingToken,
+      type: opType,
+      from: String(r.from ?? r.source_account ?? ""),
+      to: String(r.to ?? ""),
+      amount: String(r.amount),
+      assetType: String(r.asset_type ?? ""),
+      assetCode:
+        typeof r.asset_code === "string" ? (r.asset_code as string) : undefined,
+      assetIssuer:
+        typeof r.asset_issuer === "string" ? (r.asset_issuer as string) : undefined,
+      createdAt,
+      transactionHash: txHash,
+    }];
+  }
+
+  // Soroban host-function operation: walk asset_balance_changes for USDC
+  // SAC transfers and emit one HorizonPayment per transfer.
+  if (opType === "invoke_host_function" && Array.isArray(r.asset_balance_changes)) {
+    const out: HorizonPayment[] = [];
+    const changes = r.asset_balance_changes as Array<Record<string, unknown>>;
+    for (let i = 0; i < changes.length; i += 1) {
+      const c = changes[i]!;
+      if (c.type !== "transfer") continue;
+      if (typeof c.amount !== "string") continue;
+      out.push({
+        // The op id alone collides with itself when one op has multiple
+        // changes; suffix with the change index so dedupe-by-id works.
+        id: `${opId}:${i}`,
+        pagingToken,
+        type: "payment", // synthesised: downstream code only cares about the shape
+        from: String(c.from ?? ""),
+        to: String(c.to ?? ""),
+        amount: String(c.amount),
+        assetType: String(c.asset_type ?? ""),
+        assetCode:
+          typeof c.asset_code === "string" ? (c.asset_code as string) : undefined,
+        assetIssuer:
+          typeof c.asset_issuer === "string" ? (c.asset_issuer as string) : undefined,
+        createdAt,
+        transactionHash: txHash,
+      });
+    }
+    return out;
+  }
+
+  return [];
 }

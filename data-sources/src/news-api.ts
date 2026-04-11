@@ -484,7 +484,7 @@ app.listen(PORT, async () => {
   // same URL under two different capabilities is allowed.
   selfRegister({
     name: "news",
-    url: `http://localhost:${PORT}`,
+    url: `http://localhost:${PORT}/news`,
     capability: "news",
     priceStroops: 10_000n, // $0.001
     protocol: "x402",
@@ -493,7 +493,7 @@ app.listen(PORT, async () => {
 
   selfRegister({
     name: "news_intelligence",
-    url: `http://localhost:${PORT}`,
+    url: `http://localhost:${PORT}/briefing`,
     capability: "briefing",
     priceStroops: 30_000n, // $0.003
     protocol: "x402",

@@ -173,7 +173,12 @@ export class HorizonPaymentStore extends ExternalStore<HorizonPaymentSnapshot> {
     }
     this.setState({ status: "connecting", reconnectAt: null });
 
-    const url = `${this.horizonUrl}/accounts/${this.address}/payments?cursor=${this.lastCursor}`;
+    // /operations (NOT /payments) so the stream sees Soroban SAC transfers.
+    // The classic /payments endpoint silently drops invoke_host_function ops,
+    // which means it sees nothing in this codebase: all USDC moves through
+    // the SAC contract. /operations exposes those via asset_balance_changes,
+    // and normalisePayment fans them out into 1-N HorizonPayment records.
+    const url = `${this.horizonUrl}/accounts/${this.address}/operations?cursor=${this.lastCursor}`;
     const es = new EventSource(url);
     this.es = es;
 
@@ -196,30 +201,50 @@ export class HorizonPaymentStore extends ExternalStore<HorizonPaymentSnapshot> {
         return;
       }
 
-      const payment = normalisePayment(parsed);
-      if (!payment) return;
-      if (!isUsdcByCode(payment)) return;
+      // normalisePayment returns 0..N records: 0 for irrelevant ops,
+      // 1 for classic payments, 1..N for invoke_host_function ops with
+      // asset_balance_changes. Track the cursor at the operation level
+      // (paging_token is identical across the synthetic records this op
+      // produced) so reconnects resume from the right place.
+      const records = normalisePayment(parsed);
+      if (records.length === 0) return;
 
-      // Track the cursor so reconnects resume from the last seen event.
-      if (payment.pagingToken) this.lastCursor = payment.pagingToken;
+      // Use the first record's paging token: all records from one op share it.
+      const opPagingToken = records[0]!.pagingToken;
+      if (opPagingToken) this.lastCursor = opPagingToken;
 
       // Successful message: the connection is definitely OPEN. Any pending
       // backoff from a previous failure should reset for next error.
       this.backoffMs = INITIAL_BACKOFF_MS;
 
-      // Prepend and cap. Dedupe by id because a reconnect can replay the
-      // last-seen event.
-      const payments = this.state.payments;
-      if (payments.some((p) => p.id === payment.id)) return;
-      const next = [payment, ...payments].slice(0, MAX_PAYMENTS);
-      this.setState({
-        payments: next,
-        status: "open",
-        reconnectAt: null,
-      });
+      let updatedPayments: readonly HorizonPayment[] = this.state.payments;
+      let mutated = false;
+      const seenIds = new Set(updatedPayments.map((p) => p.id));
 
-      for (const listener of this.paymentListeners) {
-        listener(this.address, payment);
+      for (const payment of records) {
+        if (!isUsdcByCode(payment)) continue;
+        if (seenIds.has(payment.id)) continue;
+        seenIds.add(payment.id);
+        // Prepend and cap. The cap is per-store so heavy operations with
+        // many balance changes can never overrun the buffer.
+        updatedPayments = [payment, ...updatedPayments].slice(0, MAX_PAYMENTS);
+        mutated = true;
+
+        for (const listener of this.paymentListeners) {
+          listener(this.address, payment);
+        }
+      }
+
+      if (mutated) {
+        this.setState({
+          payments: updatedPayments,
+          status: "open",
+          reconnectAt: null,
+        });
+      } else {
+        // We got a valid op event but no new USDC payments came out of it.
+        // Still flip status to OPEN so the LIVE dot shows healthy.
+        this.setState({ status: "open", reconnectAt: null });
       }
     };
 

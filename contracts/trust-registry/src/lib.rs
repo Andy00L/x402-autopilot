@@ -40,6 +40,19 @@ pub enum DataKey {
     CapIndex(Symbol),
     Deposit(u32),
     QualityReport(Address, u32),
+    /// Total number of unique capability names ever registered.
+    /// Lives in INSTANCE storage so list_capabilities can paginate
+    /// without scanning persistent keys.
+    /// Single u32 keeps the instance entry tiny — no DoS surface.
+    CapCount,
+    /// Capability name at index i (0-based, contiguous up to CapCount).
+    /// Lives in PERSISTENT storage so adding capabilities does NOT bloat
+    /// the instance entry that gets loaded on every contract call.
+    /// See https://github.com/paltalabs/instance-persistent-dos-soroban
+    /// for the rationale: a Vec<Symbol> in instance storage would grow
+    /// unbounded and slow down every heartbeat / register / list_services
+    /// call until DoS.
+    CapName(u32),
 }
 
 /// Anti-spam deposit: 100,000 stroops ($0.01 USDC, 7 decimals).
@@ -66,6 +79,8 @@ impl TrustRegistry {
             .instance()
             .set(&DataKey::UsdcAddr, &usdc_addr);
         env.storage().instance().set(&DataKey::NextId, &0u32);
+        // Capability index counter starts at 0; register_service grows it.
+        env.storage().instance().set(&DataKey::CapCount, &0u32);
         env.storage().instance().extend_ttl(100_000, 100_000);
     }
 
@@ -166,6 +181,50 @@ impl TrustRegistry {
         env.storage()
             .persistent()
             .extend_ttl(&cap_key, 100_000, 100_000);
+
+        // Track this capability name in the paginated CapName index if new.
+        //
+        // Why a scan over CapName(0..count) instead of a flag key:
+        //   With <50 capabilities the loop is microseconds. For true scale
+        //   (1000+ caps) a separate CapExists(Symbol)->bool persistent flag
+        //   would be O(1) instead of O(n). That's a premature optimisation
+        //   for the current registry size and would add another persistent
+        //   write per registration. Documented tradeoff.
+        //
+        // Why we can't trust "cap_ids was empty before push" as a new-cap
+        // signal: heartbeat() and list_services() both rewrite CapIndex
+        // with only the live IDs, so an empty Vec can also mean "every
+        // service in this capability has expired". The capability name is
+        // still known and should not be re-added.
+        let cap_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CapCount)
+            .unwrap_or(0);
+        let mut already_tracked = false;
+        for i in 0..cap_count {
+            if let Some(name) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Symbol>(&DataKey::CapName(i))
+            {
+                if name == capability {
+                    already_tracked = true;
+                    break;
+                }
+            }
+        }
+        if !already_tracked {
+            env.storage()
+                .persistent()
+                .set(&DataKey::CapName(cap_count), &capability);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::CapName(cap_count), 50_000, 100_000);
+            env.storage()
+                .instance()
+                .set(&DataKey::CapCount, &(cap_count + 1));
+        }
 
         // Increment counter
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
@@ -330,6 +389,56 @@ impl TrustRegistry {
             .temporary()
             .get(&DataKey::Service(service_id))
             .expect("service not found or expired")
+    }
+
+    /// Return capability names, paginated.
+    ///
+    /// `start` is the 0-based index. `limit` caps the result size.
+    /// Clients call list_capabilities(0, 50), then list_capabilities(50, 50),
+    /// etc., until the returned Vec is shorter than `limit`. Returns an
+    /// empty Vec when `start >= CapCount`.
+    ///
+    /// Each name is loaded from a separate persistent key, so this scales
+    /// to thousands of capabilities without bloating instance storage.
+    /// Names whose persistent entry has been read have their TTL extended,
+    /// so an actively-polled registry never loses capability names.
+    pub fn list_capabilities(env: Env, start: u32, limit: u32) -> Vec<Symbol> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CapCount)
+            .unwrap_or(0);
+
+        let mut result: Vec<Symbol> = Vec::new(&env);
+        if start >= count || limit == 0 {
+            return result;
+        }
+
+        let end = core::cmp::min(start.saturating_add(limit), count);
+        for i in start..end {
+            if let Some(name) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Symbol>(&DataKey::CapName(i))
+            {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&DataKey::CapName(i), 50_000, 100_000);
+                result.push_back(name);
+            }
+        }
+
+        result
+    }
+
+    /// Total number of unique capabilities ever registered.
+    /// Cheap O(1) read from instance storage. Useful for clients that want
+    /// to size their pagination loop without scanning.
+    pub fn get_capability_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CapCount)
+            .unwrap_or(0)
     }
 
     /// Report quality for a service. Max 1 report per (reporter, service_id) per day.

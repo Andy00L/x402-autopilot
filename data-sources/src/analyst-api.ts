@@ -535,7 +535,7 @@ app.listen(PORT, async () => {
   // to the analyst wallet node.
   selfRegister({
     name: "analyst",
-    url: `http://localhost:${PORT}`,
+    url: `http://localhost:${PORT}/analyze`,
     capability: "analysis",
     priceStroops: 50_000n, // $0.005
     protocol: "x402",

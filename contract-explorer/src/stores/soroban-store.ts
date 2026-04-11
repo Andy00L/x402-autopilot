@@ -25,6 +25,7 @@ import {
   fetchPolicyState,
   fetchRegistryNextId,
   getLatestLedger,
+  listCapabilities,
   listServices,
 } from "@/lib/soroban-rpc";
 import { DEFAULTS } from "@/lib/constants";
@@ -96,9 +97,17 @@ export class SorobanStore extends ExternalStore<SorobanSnapshot> {
   private timerId: ReturnType<typeof setInterval> | null = null;
   private inflightController: AbortController | null = null;
   private started = false;
-  /** Hybrid capability discovery. Seed capabilities are queried from the
-   *  first poll; new capabilities learned from `register` events are
-   *  merged in so novel service types appear automatically. */
+  /** Hybrid capability discovery. Three sources, all merged into the same
+   *  Set:
+   *    1. SEED_CAPABILITIES (constants.ts)  — bootstrap before the first
+   *       successful RPC call so the dashboard renders something instantly.
+   *    2. list_capabilities()               — authoritative on-chain index,
+   *       polled every cycle (Phase 5 of the v3 upgrade).
+   *    3. `register` event topics           — covers the brief window
+   *       between a service registering and the next list_capabilities
+   *       poll, and survives RPC outages on the list_capabilities path.
+   *  Once a capability is in the set it stays there for the lifetime of
+   *  the store. */
   private capabilities: Set<string> = new Set(DEFAULTS.SEED_CAPABILITIES);
   /** The next poll's `startLedger`. Null before the first successful
    *  `getLatestLedger`. */
@@ -181,6 +190,26 @@ export class SorobanStore extends ExternalStore<SorobanSnapshot> {
     } catch {
       // RPC down. Don't clear state; degrade loudly via the offline flag
       // below once we detect policy and registry also failed.
+    }
+
+    // Step 1b: fetch the on-chain capability list. Merges into the
+    // existing capability set so anything previously seen (via SEED or
+    // events) is preserved. listCapabilities returns [] on RPC failure,
+    // in which case we fall back to whatever this.capabilities already
+    // holds (SEED on first poll, accumulated capabilities afterwards).
+    try {
+      const onChain = await listCapabilities(
+        this.rpcUrl,
+        DEFAULTS.NETWORK_PASSPHRASE,
+        this.registryContractId,
+        0,
+        100,
+      );
+      for (const cap of onChain) {
+        if (cap.length > 0) this.capabilities.add(cap);
+      }
+    } catch {
+      // Registry RPC blip — keep the existing capability set.
     }
 
     // Step 2: run policy, registry, nextId, events in parallel. Each has

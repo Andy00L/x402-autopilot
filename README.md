@@ -210,7 +210,7 @@ Add to your Claude Desktop MCP settings:
         "STELLAR_PRIVATE_KEY": "S...",
         "STELLAR_PUBLIC_KEY": "G...",
         "WALLET_POLICY_CONTRACT_ID": "C...",
-        "TRUST_REGISTRY_CONTRACT_ID": "CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ",
+        "TRUST_REGISTRY_CONTRACT_ID": "CBL2TCD7GLHLPLH4GXQO5L6DR3XACQ7WS3S3FHI2L2F7JO2WZCZTEDSP",
         "USDC_SAC_CONTRACT_ID": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
         "OZ_API_KEY": "...",
         "ALLOW_HTTP": "true"
@@ -329,7 +329,7 @@ stelos/
 | Contract | Ownership | How to get one |
 |----------|-----------|----------------|
 | wallet-policy | Per user (owner auth on every write) | `npm run deploy:wallet-policy` |
-| trust-registry | Shared, anyone reads/registers | Pre-deployed: `CAIXHQCJQPJ6AVC4YRRV7RCFCLXIE2SZWLQ4XJUTFKZZQRGGOCTDCSBQ` |
+| trust-registry | Shared, anyone reads/registers | Pre-deployed: `CBL2TCD7GLHLPLH4GXQO5L6DR3XACQ7WS3S3FHI2L2F7JO2WZCZTEDSP` |
 | USDC SAC | Stellar system contract | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
 
 The trust-registry initialization takes `(admin, usdc_addr)`. The deploy script (`scripts/deploy-trust-registry.sh`) wires both. The wallet-policy initialization takes `(owner, daily_limit, per_tx_limit, rate_limit)`. Defaults baked into the code (`src/config.ts`): $0.50/day (5,000,000 stroops), $0.01/tx (100,000 stroops), 20 req/min. The `.env.example` template ships with a more permissive set ($0.10/tx, 60 req/min) so demos do not bump into rate limits.

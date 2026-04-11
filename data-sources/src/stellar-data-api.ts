@@ -586,7 +586,7 @@ app.listen(PORT, async () => {
   // capabilities is allowed (contracts/trust-registry/src/lib.rs:113).
   selfRegister({
     name: "stellar_data",
-    url: `http://localhost:${PORT}`,
+    url: `http://localhost:${PORT}/stellar-stats`,
     capability: "blockchain",
     priceStroops: 20_000n, // $0.002
     protocol: "mpp",
@@ -595,7 +595,7 @@ app.listen(PORT, async () => {
 
   selfRegister({
     name: "market_intelligence",
-    url: `http://localhost:${PORT}`,
+    url: `http://localhost:${PORT}/market-report`,
     capability: "market_intelligence",
     priceStroops: 50_000n, // $0.005
     protocol: "x402",

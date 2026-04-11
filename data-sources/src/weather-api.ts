@@ -206,7 +206,7 @@ app.listen(PORT, () => {
   // ownership edge from the crypto wallet node to the crypto service node.
   selfRegister({
     name: "crypto_prices",
-    url: `http://localhost:${PORT}`,
+    url: `http://localhost:${PORT}/prices`,
     capability: "crypto_prices",
     priceStroops: 10_000n, // $0.001
     protocol: "x402",

@@ -509,8 +509,29 @@ async function handleSetPolicy(
 
 async function handleRegistryStatus(): Promise<ToolResult> {
   try {
-    // v2: services are per-capability. Query known capabilities.
-    const KNOWN_CAPS = ["weather", "news", "blockchain", "analysis"];
+    // v3: query the on-chain CapName index via list_capabilities. The
+    // hardcoded fallback covers the case where the registry RPC is down
+    // or the new contract has not been deployed yet — without it the
+    // tool would return an empty list and the user would see "no
+    // services" even though the local agents are registered.
+    const FALLBACK_CAPS = [
+      "crypto_prices",
+      "news",
+      "briefing",
+      "blockchain",
+      "market_intelligence",
+      "analysis",
+    ];
+    let KNOWN_CAPS: string[];
+    try {
+      KNOWN_CAPS = await registryClient.listCapabilities(0, 100);
+      if (KNOWN_CAPS.length === 0) {
+        KNOWN_CAPS = FALLBACK_CAPS;
+      }
+    } catch {
+      KNOWN_CAPS = FALLBACK_CAPS;
+    }
+
     const allServices: ServiceInfo[] = [];
 
     for (const cap of KNOWN_CAPS) {

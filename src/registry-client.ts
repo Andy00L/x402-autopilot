@@ -95,14 +95,13 @@ function toServiceInfo(raw: Record<string, unknown>): ServiceInfo {
  * List services filtered by capability, minimum trust score, and limit.
  * Uses simulate (read-only in TS). Heartbeat handles CapIndex cleanup.
  *
- * NOTE: this is the ONLY public function in this module.  An earlier
- * iteration also exported getService / heartbeat / deregister / reportQuality
- * write helpers, but every actual write path lives in
- * data-sources/src/shared.ts (services manage their own registration
- * lifecycle there) and the autopay flow no longer reports quality (it had
- * no way to resolve a recipient address to a service id, so the calls were
- * silently failing on a hardcoded id 0).  The unused write helpers were
- * removed to keep this file as a small, focused read-only client.
+ * NOTE: an earlier iteration also exported getService / heartbeat /
+ * deregister / reportQuality write helpers, but every actual write path
+ * lives in data-sources/src/shared.ts (services manage their own
+ * registration lifecycle there) and the autopay flow no longer reports
+ * quality (it had no way to resolve a recipient address to a service id,
+ * so the calls were silently failing on a hardcoded id 0).  The unused
+ * write helpers were removed to keep this file a small read-only client.
  */
 export async function listServices(
   capability: string,
@@ -117,4 +116,34 @@ export async function listServices(
 
   if (!Array.isArray(result)) return [];
   return (result as Record<string, unknown>[]).map(toServiceInfo);
+}
+
+/**
+ * List the capability names registered on this contract, paginated.
+ *
+ * `start` is the 0-based index, `limit` caps the page size. The contract
+ * tracks capabilities in a CapName(u32) persistent index seeded by
+ * register_service the first time a new capability symbol is used. The
+ * default page (start=0, limit=100) covers any registry that has fewer
+ * than 100 distinct capabilities — call again with start=100, 200, …
+ * for larger registries until the returned array is shorter than `limit`.
+ *
+ * On RPC failure or contract panic, returns an empty array. The caller
+ * should fall back to a hardcoded seed list when this happens so the UI
+ * still has something to render.
+ */
+export async function listCapabilities(
+  start: number = 0,
+  limit: number = 100,
+): Promise<string[]> {
+  try {
+    const result = await simulateContract("list_capabilities", [
+      nativeToScVal(start, { type: "u32" }),
+      nativeToScVal(limit, { type: "u32" }),
+    ]);
+    if (!Array.isArray(result)) return [];
+    return (result as unknown[]).map((s) => String(s));
+  } catch {
+    return [];
+  }
 }

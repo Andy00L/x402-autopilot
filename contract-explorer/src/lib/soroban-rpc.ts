@@ -258,6 +258,45 @@ export async function listServices(
   }
 }
 
+/**
+ * List the capability names tracked by the trust-registry, paginated.
+ *
+ * The contract maintains a CapCount (instance) + CapName(u32) (persistent)
+ * index that grows by one entry every time a new capability symbol is
+ * registered. This call is the on-chain replacement for the hardcoded
+ * SEED_CAPABILITIES list — the dashboard reads it on every poll so a
+ * service registered under a brand new capability ("translation",
+ * "weather-pro", anything) appears without a code change.
+ *
+ * Returns [] on RPC failure or contract panic. Callers should fall
+ * back to SEED_CAPABILITIES so the UI still renders something while
+ * the registry is unreachable.
+ */
+export async function listCapabilities(
+  rpcUrl: string,
+  passphrase: string,
+  contractId: string,
+  start = 0,
+  limit = 100,
+): Promise<string[]> {
+  try {
+    const result = await simulateRead<unknown[]>(
+      rpcUrl,
+      passphrase,
+      contractId,
+      "list_capabilities",
+      [
+        nativeToScVal(start, { type: "u32" }),
+        nativeToScVal(limit, { type: "u32" }),
+      ],
+    );
+    if (!Array.isArray(result)) return [];
+    return result.map((v) => String(v));
+  } catch {
+    return [];
+  }
+}
+
 function toServiceInfo(raw: Record<string, unknown>): ServiceInfo {
   return {
     id: Number(raw.id ?? 0),

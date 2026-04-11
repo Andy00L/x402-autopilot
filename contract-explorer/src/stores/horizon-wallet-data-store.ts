@@ -347,12 +347,24 @@ async function fetchUsdcBalance(
   return { kind: "ok", stroops: 0n };
 }
 
-interface HorizonPaymentsResponse {
+interface HorizonAssetBalanceChange {
+  asset_type?: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  /** "transfer" | "mint" | "burn" | "clawback" — only "transfer" matters here. */
+  type?: string;
+  from?: string;
+  to?: string;
+  amount?: string;
+}
+
+interface HorizonOperationsResponse {
   _embedded?: {
     records: Array<{
       id: string;
       paging_token: string;
       type: string;
+      // Classic payment fields (type === "payment" / "path_payment_*")
       from?: string;
       to?: string;
       source_account?: string;
@@ -360,6 +372,8 @@ interface HorizonPaymentsResponse {
       source_amount?: string;
       asset_type?: string;
       asset_code?: string;
+      // Soroban host-function fields (type === "invoke_host_function")
+      asset_balance_changes?: HorizonAssetBalanceChange[] | null;
       created_at: string;
     }>;
   };
@@ -373,13 +387,29 @@ interface AccountHistory {
   counterparties: WalletCounterparties;
 }
 
+/**
+ * Pull USDC history from `/operations` (NOT `/payments`).
+ *
+ * Why operations: Soroban USDC transfers go through the SAC contract via
+ * `invoke_host_function`. The classic `/payments` endpoint silently drops
+ * those records (no asset_code, no from/to, no amount), so a wallet that
+ * only ever moves USDC through Soroban appears to have $0 revenue and
+ * $0 expenses.
+ *
+ * The `/operations` endpoint exposes Soroban transfers via the
+ * `asset_balance_changes` array on each `invoke_host_function` record.
+ * Each element has `from`, `to`, and `amount` in the same shape as a
+ * classic payment, plus an asset_code/asset_issuer pair so we can filter
+ * for USDC. Classic payments are still handled in the same loop so a
+ * wallet that mixes classic + SAC transfers stays consistent.
+ */
 async function fetchAccountHistory(
   horizonUrl: string,
   address: string,
   signal: AbortSignal,
 ): Promise<AccountHistory> {
   let url =
-    `${horizonUrl}/accounts/${address}/payments` +
+    `${horizonUrl}/accounts/${address}/operations` +
     `?order=desc&limit=${PAGE_LIMIT}`;
 
   let revenue = 0n;
@@ -401,15 +431,40 @@ async function fetchAccountHistory(
     }
     if (!res.ok) break;
 
-    let body: HorizonPaymentsResponse;
+    let body: HorizonOperationsResponse;
     try {
-      body = (await res.json()) as HorizonPaymentsResponse;
+      body = (await res.json()) as HorizonOperationsResponse;
     } catch {
       break;
     }
     const records = body._embedded?.records ?? [];
 
     for (const r of records) {
+      if (r.type === "invoke_host_function") {
+        // SAC transfers — iterate the per-op balance changes
+        const changes = r.asset_balance_changes ?? [];
+        for (const c of changes) {
+          if (c.asset_type === "native") continue;
+          if (c.asset_code !== "USDC") continue;
+          if (c.type !== "transfer") continue;
+          const outgoing = c.from === address;
+          const incoming = c.to === address;
+          if (!outgoing && !incoming) continue;
+          const stroops = amountToStroops(c.amount ?? "0");
+          if (incoming) {
+            revenue += stroops;
+            if (c.from && c.from !== address) receivedFrom.add(c.from);
+          }
+          if (outgoing) {
+            expenses += stroops;
+            if (c.to && c.to !== address) sentTo.add(c.to);
+          }
+          count += 1;
+        }
+        continue;
+      }
+
+      // Classic payment / path-payment operations
       if (r.asset_type === "native") continue;
       if (r.asset_code !== "USDC") continue;
       // path_payment_strict_send puts the sender amount in `source_amount`
