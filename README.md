@@ -9,9 +9,10 @@ A user asks Claude "build me a market intelligence report on XLM". Claude calls 
 ## Key facts
 
 - 6 paid endpoints across 4 service wallets, plus 1 main wallet that drives them
-- 2 Soroban contracts (wallet-policy with 8 functions, trust-registry with 8 functions)
+- 2 Soroban contracts (wallet-policy with 8 functions, trust-registry v3 with 10 functions)
 - Dual protocol: x402 (Coinbase) and MPP charge (Stripe), auto-detected via HEAD probe
 - 6 MCP tools exposed over stdio for Claude Desktop / OpenClaw integration
+- On-chain capability discovery via `list_capabilities` (paginated persistent index, no DoS surface)
 - Every payment is a real testnet USDC transfer, verifiable on [stellar.expert](https://stellar.expert/explorer/testnet)
 - Live network graph dashboard (React Flow + Zustand, 48 source files)
 - Zero-dependency CLI dashboard for terminal use
@@ -36,7 +37,7 @@ flowchart TD
     AP --> DC["src/discovery.ts<br/>3-tier pipeline"]
 
     PC --> WP["wallet-policy<br/>Soroban, 8 fn"]
-    DC --> RC["src/registry-client.ts"] --> TR["trust-registry<br/>Soroban, 8 fn"]
+    DC --> RC["src/registry-client.ts"] --> TR["trust-registry v3<br/>Soroban, 10 fn"]
     DC --> BAZ["x402 Bazaar CDP"]
     DC --> XLM["xlm402.com catalog"]
 
@@ -229,9 +230,9 @@ Add to your Claude Desktop MCP settings:
 | `autopilot_check_budget` | Sync from Soroban and return today's spend, remaining budget, daily limit, and lifetime totals. |
 | `autopilot_discover` | Run the 3-tier discovery pipeline (Bazaar + trust-registry + xlm402.com) and return services sorted by trust score. Requires a `capability` argument. |
 | `autopilot_set_policy` | Call `wallet-policy::update_policy`. Owner authorization required (the engine signs with the configured `STELLAR_PRIVATE_KEY`). |
-| `autopilot_registry_status` | Aggregate `list_services` calls across the four built-in capabilities (`weather`, `news`, `blockchain`, `analysis`). |
+| `autopilot_registry_status` | Read the on-chain capability list via `list_capabilities`, then aggregate `list_services` for each capability. Falls back to a hardcoded 6-entry list if the registry RPC is down. |
 
-**Known gap:** `autopilot_registry_status` polls the four built-in capability names hardcoded in `mcp-server/src/index.ts:513`, but the live agent network registers under `crypto_prices`, `news`, `briefing`, `blockchain`, `market_intelligence`, and `analysis`. The contract-explorer dashboard reads the full set via `SEED_CAPABILITIES` in `contract-explorer/src/lib/constants.ts:38`. Use `autopilot_discover` with an explicit capability to query the others.
+The capability list is fetched from the trust-registry's `CapName(u32)` persistent index on every call. New capabilities (anything a service registers under, including names that did not exist when the dashboard was last redeployed) appear automatically without code changes.
 
 ## OpenClaw integration
 
@@ -265,16 +266,16 @@ The Market Intelligence agent runs an autonomous monitor on a 90-second interval
 stelos/
   contracts/
     wallet-policy/src/lib.rs          353 lines, 8 pub fn
-    trust-registry/src/lib.rs         426 lines, 8 pub fn
-  src/                                12 modules, 1967 lines
+    trust-registry/src/lib.rs         535 lines, 10 pub fn (v3: list_capabilities + get_capability_count)
+  src/                                12 modules, 1996 lines
     autopay.ts                        333 lines  payment orchestrator
     policy-client.ts                  316 lines  Soroban RPC for wallet-policy
     discovery.ts                      231 lines  3-tier discovery pipeline
     protocol-detector.ts              201 lines  HEAD probe + 402 header parsing
     ws-server.ts                      197 lines  WebSocket + 5s Soroban polling + MCP relay
+    registry-client.ts                149 lines  Soroban RPC for trust-registry (listServices + listCapabilities)
     types.ts                          136 lines  6 error classes + type definitions
     config.ts                         132 lines  env validation + x402/mppx clients
-    registry-client.ts                120 lines  Soroban RPC for trust-registry
     security.ts                       107 lines  SSRF prevention + price parser
     budget-tracker.ts                  88 lines  BigInt local cache
     event-bus.ts                       65 lines  WebSocket broadcast + bigint serializer
@@ -285,12 +286,12 @@ stelos/
     shared.ts                         532 lines  x402 server, registration, heartbeat, deregister
     news-api.ts                       502 lines  x402 /news + /briefing + LLM
     weather-api.ts                    215 lines  x402 /prices, CoinGecko upstream
-  mcp-server/src/index.ts             621 lines  6 tools, stdio transport, ws relay
-  contract-explorer/src/              48 files, 7001 lines
-    stores/  (10 files)              2947 lines  Zustand stores + payment-orchestrator (1027)
+  mcp-server/src/index.ts             642 lines  6 tools, stdio transport, ws relay
+  contract-explorer/src/              48 files, 7199 lines
+    stores/  (10 files)              3056 lines  Zustand stores + payment-orchestrator (1027)
     hooks/   (9 files)                860 lines  React hooks (use-graph-layout: 592)
     components/ (12 + 9 ui files)    2090 lines  nodes, edges, layout, shadcn/ui
-    lib/ (5 files)                   1024 lines  Soroban RPC, types, constants, Horizon
+    lib/ (5 files)                   1113 lines  Soroban RPC, types, constants, Horizon
     app.tsx + main.tsx + types         80 lines  React shell
   scripts/                            7 TS + 2 bash, 1584 TS lines
     setup-service-wallets.ts          534 lines  generate, fund, trustline, USDC, allowlist
@@ -385,10 +386,10 @@ The full list lives in [.env.example](.env.example). Required vs optional:
 | 7 | SSRF via URL | Block file://, private IPs, localhost unless `ALLOW_HTTP` | `src/security.ts:38` |
 | 8 | Prompt injection spend ("send to GATTACKER") | On-chain allowlist enforced by `check_policy` | `contracts/wallet-policy/src/lib.rs:158` |
 | 9 | Duplicate `record_spend` from RPC retry | Nonce stored on-chain, contract panics on duplicate | `contracts/wallet-policy/src/lib.rs:197` |
-| 10 | Spam registrations | $0.01 USDC deposit collected via SAC transfer | `contracts/trust-registry/src/lib.rs:97` |
-| 11 | Service crashed without deregister | TTL counts down (60 ledgers initial, 180 after heartbeat); entry auto-expires | `contracts/trust-registry/src/lib.rs:181` |
-| 12 | Crashed deposit recovery | `reclaim_deposit(service_id, owner)` after TTL expires | `contracts/trust-registry/src/lib.rs:378` |
-| 13 | Duplicate URL within capability | Rejected with panic at register | `contracts/trust-registry/src/lib.rs:120` |
+| 10 | Spam registrations | $0.01 USDC deposit collected via SAC transfer | `contracts/trust-registry/src/lib.rs:112` |
+| 11 | Service crashed without deregister | TTL counts down (60 ledgers initial, 180 after heartbeat); entry auto-expires | `contracts/trust-registry/src/lib.rs:240` |
+| 12 | Crashed deposit recovery | `reclaim_deposit(service_id, owner)` after TTL expires | `contracts/trust-registry/src/lib.rs:487` |
+| 13 | Duplicate URL within capability | Rejected with panic at register | `contracts/trust-registry/src/lib.rs:142` |
 | 14 | Restart within TTL window | `shared.ts:resolveServiceId` lists first, reuses existing ID, resumes heartbeat | `data-sources/src/shared.ts:227` |
 | 15 | HEAD returns 200 but GET returns 402 | `autopay.ts:classifyFreeAs402` re-detects from response headers | `src/autopay.ts:283` |
 | 16 | Response body read twice | `.text()` once, then `JSON.parse` separately | `src/autopay.ts:138` |

@@ -50,7 +50,7 @@ flowchart TD
 
     subgraph Stellar["Stellar Testnet"]
         WP["wallet-policy<br/>8 fn, 353 lines"]
-        TR["trust-registry<br/>8 fn, 426 lines"]
+        TR["trust-registry v3<br/>10 fn, 535 lines"]
         USDC["USDC SAC"]
     end
 
@@ -252,17 +252,37 @@ flowchart LR
 
 If any tier fails, the others still produce results. `invalidateService(url)` clears a single failing URL from every cached capability list, so the next discover call will not return it again until the cache repopulates from the live tiers.
 
+## Dynamic capability discovery
+
+Three of the system's read paths fetch the live capability set from the trust-registry instead of hardcoding it. The chain of trust is the same in all three: `list_capabilities(0, 100)` on the contract, fall back to a small hardcoded seed if the RPC is unreachable.
+
+```mermaid
+flowchart LR
+    SC["trust-registry<br/>list_capabilities(0,100)"]
+    SC --> A["mcp-server<br/>handleRegistryStatus"]
+    SC --> B["soroban-store<br/>poll Step 1b"]
+    SC --> C["src/registry-client<br/>listCapabilities()"]
+    A -.-> AF["FALLBACK_CAPS<br/>6 entries"]
+    B -.-> BF["SEED_CAPABILITIES<br/>6 entries"]
+    C -.-> CF["empty array<br/>caller decides"]
+```
+
+The contract write side that backs this is `register_service`. When a service registers under a capability that has not been seen before, the contract appends `CapName(CapCount)` and increments `CapCount`. The next `list_capabilities` call returns the new symbol. Net result: a service registering under `translation` (or any other new symbol) becomes discoverable by every client on its next poll cycle, with no code changes anywhere.
+
+The MCP and dashboard fallbacks exist because a fresh deployment has zero capabilities indexed until the first service registers. Without the seed list the dashboard would render an empty registry node on first load.
+
 ## Trust registry storage layout
 
 The trust-registry uses three Soroban storage tiers. Auto-expiry replaces the manual stale-checking pattern from earlier versions.
 
 ```mermaid
 flowchart TD
-    I["Instance storage<br/>Admin (Address)<br/>UsdcAddr (Address)<br/>NextId (u32)<br/>Fixed size, never grows"]
+    I["Instance storage<br/>Admin, UsdcAddr (Address)<br/>NextId, CapCount (u32)<br/>Fixed size, never grows"]
     T["Temporary storage<br/>Service(id) -> ServiceInfo<br/>Initial TTL 60 ledgers (~5 min)<br/>Heartbeat extends to 180 (~15 min)<br/>Auto-deletes on TTL 0"]
-    P["Persistent storage<br/>CapIndex(capability) -> Vec<u32><br/>Deposit(id) -> DepositRecord<br/>QualityReport(reporter, id) -> u32"]
+    P["Persistent storage<br/>CapIndex(cap) -> Vec u32<br/>CapName(i) -> Symbol<br/>Deposit(id) -> DepositRecord<br/>QualityReport(reporter, id) -> u32"]
 
     I -->|"register increments NextId"| T
+    I -->|"new capability bumps CapCount"| P
     T -->|"heartbeat extends TTL"| T
     T -->|"on TTL 0, auto-removed"| P
     P -->|"heartbeat cleans dead IDs from CapIndex"| P
@@ -273,8 +293,10 @@ flowchart TD
 | instance | `Admin` | `Address` | extended on init to 100,000 |
 | instance | `UsdcAddr` | `Address` | extended on init to 100,000 |
 | instance | `NextId` | `u32` | 100,000 |
+| instance | `CapCount` | `u32` (v3) | 100,000 |
 | temporary | `Service(id)` | `ServiceInfo` | 60 (register) or 180 (heartbeat) ledgers |
 | persistent | `CapIndex(capability)` | `Vec<u32>` | extended to 100,000 on every write |
+| persistent | `CapName(i)` | `Symbol` (v3) | extended to 100,000 on every read and write |
 | persistent | `Deposit(id)` | `DepositRecord{owner, amount}` | extended to 100,000 |
 | temporary | `QualityReport(reporter, id)` | `u32` (day_key) | 17,280 ledgers (~24 h) |
 
@@ -337,22 +359,30 @@ stateDiagram-v2
 
 The `day_key` is `env.ledger().timestamp() / 86400`, so a new UTC day starts a fresh `SpendRec`. The `min_count` field tracks the rate-limit window: a request is rejected if `current_min == record.last_min && record.min_count >= policy.rate_limit`.
 
-## Trust registry contract
+## Trust registry contract (v3)
 
-`contracts/trust-registry/src/lib.rs` (426 lines, 8 public functions).
+`contracts/trust-registry/src/lib.rs` (535 lines, 10 public functions).
 
 | Function | Type | Purpose | Auth |
 |----------|------|---------|------|
-| `initialize(admin, usdc_addr)` | write | Set admin + USDC SAC + NextId=0 | admin |
-| `register_service(owner, url, name, capability, price, protocol) -> u32` | write | Collect $0.01 deposit, store in temporary, append to CapIndex | owner |
+| `initialize(admin, usdc_addr)` | write | Set admin + USDC SAC + NextId=0 + CapCount=0 | admin |
+| `register_service(owner, url, name, capability, price, protocol) -> u32` | write | Collect $0.01 deposit, store in temporary, append to CapIndex, append to CapName index if new | owner |
 | `heartbeat(service_id)` | write | Extend TTL to 180 ledgers, clean dead CapIndex entries | service owner |
 | `deregister_service(service_id)` | write | Remove from temp + CapIndex, refund deposit | service owner |
 | `list_services(capability, min_score, limit) -> Vec<ServiceInfo>` | read | Scan CapIndex by capability, filter, limit | none |
 | `get_service(service_id) -> ServiceInfo` | read | Direct lookup from temporary | none |
+| `list_capabilities(start, limit) -> Vec<Symbol>` | read | Paginated read of CapName(start..start+limit) | none |
+| `get_capability_count() -> u32` | read | O(1) instance read of CapCount | none |
 | `report_quality(reporter, service_id, success)` | write | Max 1 per reporter per service per day, recompute score | reporter |
 | `reclaim_deposit(service_id, owner)` | write | Refund deposit after TTL expiry, only original owner | owner |
 
 `DEPOSIT_AMOUNT` is hardcoded to `100_000` stroops ($0.01 USDC). Trust score defaults to 70; after the first quality report it becomes `(successful * 100) / total`.
+
+**v3 capability index.** The contract maintains `CapCount` (a `u32` in instance storage) and `CapName(u32)` (a sparse `Symbol` index in persistent storage). When `register_service` is called with a capability symbol that has not been seen before, a new `CapName(CapCount)` entry is written and `CapCount` is incremented. Existing capabilities are detected by an O(n) scan over `CapName(0..CapCount)`. This is microseconds at <50 capabilities and is documented inline as a tradeoff against an O(1) `CapExists(Symbol)->bool` flag (which would cost an extra persistent write per registration).
+
+The instance-storage cost of the index is exactly 4 bytes (`CapCount: u32`). The capability *names* live in separate persistent ledger entries that are loaded only when `list_capabilities` reads them. This is the documented anti-DoS pattern from <https://github.com/paltalabs/instance-persistent-dos-soroban>: a `Vec<Symbol>` in instance storage would grow unbounded and slow down every `heartbeat`, `register`, and `list_services` call until DoS, because instance storage is loaded in full on every contract invocation.
+
+`list_capabilities(start, limit)` returns up to `limit` capability symbols starting at `start`. Clients call it with `(0, 100)` and paginate when the returned `Vec` is shorter than `limit`. Every read extends the TTL on the touched `CapName(i)` entries (50_000 / 100_000) so an actively polled registry never loses capability names. This is how `mcp-server` and the contract-explorer dashboard discover new service categories without code changes.
 
 ## CLI dashboard
 
@@ -459,17 +489,17 @@ See [contract-explorer/README.md](contract-explorer/README.md) for the full dire
 ```
 contracts/
   wallet-policy/src/lib.rs          353 lines, 8 pub fn
-  trust-registry/src/lib.rs         426 lines, 8 pub fn
+  trust-registry/src/lib.rs         535 lines, 10 pub fn  (v3)
 
-src/                                1967 lines total
+src/                                1996 lines total
   autopay.ts                        333  payment orchestrator
   policy-client.ts                  316  Soroban writer for wallet-policy
   discovery.ts                      231  3-tier discovery pipeline
   protocol-detector.ts              201  HEAD probe + 402 header parsing
   ws-server.ts                      197  WebSocket server, 5s Soroban poll, MCP relay
+  registry-client.ts                149  Soroban reader (listServices + listCapabilities)
   types.ts                          136  6 error classes + interfaces
   config.ts                         132  env validation, x402 + mppx clients
-  registry-client.ts                120  Soroban reader for trust-registry
   security.ts                       107  SSRF prevention + parsePriceStroops
   budget-tracker.ts                  88  BigInt local cache
   event-bus.ts                       65  WebSocket broadcast + bigint serializer
@@ -483,14 +513,15 @@ data-sources/src/                   2413 lines total
   weather-api.ts                    215  x402 prices, CoinGecko upstream
 
 mcp-server/src/
-  index.ts                          621  6 tools, stdio transport, ws relay
+  index.ts                          642  6 tools, stdio transport, ws relay,
+                                          dynamic capability discovery
 
-contract-explorer/src/              7001 lines total, 48 files
-  stores/  (10 files)              2947  Zustand stores
+contract-explorer/src/              7199 lines total, 48 files
+  stores/  (10 files)              3056  Zustand stores
     payment-orchestrator.ts        1027   cross-store wiring
-    horizon-wallet-data-store.ts    470
-    soroban-store.ts                363
-    horizon-payment-store.ts        333
+    horizon-wallet-data-store.ts    525   (uses /operations + asset_balance_changes)
+    soroban-store.ts                392   (calls listCapabilities each poll)
+    horizon-payment-store.ts        358   (streams /operations)
     dashboard-store.ts              157
     ws-budget-store.ts              147
     live-edge-store.ts              139
@@ -521,12 +552,12 @@ contract-explorer/src/              7001 lines total, 48 files
     edges/bullet-edge.tsx           154
     edges/ownership-edge.tsx         61
     ui/ (9 shadcn components)       435
-  lib/ (5 files)                   1024
-    soroban-rpc.ts                  481
+  lib/ (5 files)                   1113
+    soroban-rpc.ts                  520   (adds listCapabilities)
     types.ts                        261
+    horizon.ts                      127   (normalisePayment returns array)
     utils.ts                        106
     constants.ts                     99
-    horizon.ts                       77
   app.tsx + main.tsx + vite-env.d    80
 
 scripts/                            1584 TS lines + 2 bash files
@@ -550,8 +581,9 @@ scripts/                            1584 TS lines + 2 bash files
 | Concurrent budget race | 30s async mutex, one payment in flight at a time | `src/mutex.ts` |
 | Soroban RPC down | Fail-closed: `checkPolicy` returns `{allowed:false, reason:"rpc_unavailable"}` | `src/policy-client.ts:202` |
 | Replay attack | Nonce stored on-chain, contract panics on duplicate | `contracts/wallet-policy/src/lib.rs:197` |
-| Registry spam | $0.01 USDC deposit collected via SAC transfer | `contracts/trust-registry/src/lib.rs:97` |
-| Fake quality reports | Max 1 report per reporter per service per day, key includes day_key | `contracts/trust-registry/src/lib.rs:346` |
+| Registry spam | $0.01 USDC deposit collected via SAC transfer | `contracts/trust-registry/src/lib.rs:112` |
+| Fake quality reports | Max 1 report per reporter per service per day, key includes day_key | `contracts/trust-registry/src/lib.rs:455` |
+| Capability index DoS | `CapName(u32)` paginated persistent keys (NOT a `Vec` in instance storage). Instance entry adds 4 bytes total. | `contracts/trust-registry/src/lib.rs:405` |
 | Secret exposure in errors | `maskKey()` for Stellar keys, `Bearer ***` for API keys, regex strip in `mcp-server/src/index.ts:fail` | `src/config.ts:29`, `mcp-server/src/index.ts:138` |
 | Response body consumed twice | Single `.text()` then `JSON.parse` separately | `src/autopay.ts:138` |
 | HEAD 200 but GET 402 | `classifyFreeAs402` re-detects from response and falls through to payment | `src/autopay.ts:283` |

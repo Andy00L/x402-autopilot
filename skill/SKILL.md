@@ -41,7 +41,7 @@ Update the on-chain spending policy. Owner authorization required (the engine si
 
 ### autopilot_registry_status
 
-Aggregate `list_services` calls across the four built-in capability names hardcoded in `mcp-server/src/index.ts:513` (`weather`, `news`, `blockchain`, `analysis`). The live agent network also registers under `crypto_prices`, `briefing`, and `market_intelligence`. Use `autopilot_discover` with explicit capability names to query those.
+Read the on-chain capability set via `list_capabilities` (the v3 trust-registry's `CapName(u32)` index), then aggregate `list_services` for each capability and return the union. Falls back to a hardcoded 6-entry list if the registry RPC is down. New capabilities registered against the contract appear automatically.
 
 **Input:** none
 **Output:** `{ total, alive, services }`

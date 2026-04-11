@@ -2,7 +2,7 @@
 
 Real-time network graph dashboard for the x402 Autopilot system. Visualizes wallets, services, and Soroban contracts as an interactive React Flow canvas with animated payment flows.
 
-48 TypeScript/TSX source files, 7001 lines. Built on React 19, React Flow 12, Zustand 5, Tailwind CSS, and shadcn/ui (Radix primitives). Standalone Vite app, not part of the npm workspace.
+48 TypeScript/TSX source files, 7199 lines. Built on React 19, React Flow 12, Zustand 5, Tailwind CSS, and shadcn/ui (Radix primitives). Standalone Vite app, not part of the npm workspace.
 
 ## Quick start
 
@@ -100,7 +100,7 @@ All external data enters through Zustand stores. React components never subscrib
 
 The orchestrator runs outside React (initialized once at module load in `src/app.tsx`). It subscribes to all data stores and produces cross-store reactions:
 
-1. **Horizon payment detected** (USDC transfer between known wallets) fires a glow pulse on both wallet nodes, queues a bullet animation on the connecting edge, appends a "spend" row to the activity feed
+1. **Horizon payment detected** (USDC transfer between known wallets) fires a glow pulse on both wallet nodes, queues a bullet animation on the connecting edge, appends a "spend" row to the activity feed. Note: classic Stellar `payment` operations do not capture Soroban USDC moves; the dashboard reads `/operations` and parses `asset_balance_changes` from `invoke_host_function` ops to see SAC transfers.
 2. **Soroban spend event** (contract event log) fires the same effects, sourced from contract events instead of Horizon payments
 3. **WebSocket `spend:ok`** fires immediately, with no polling delay, then merges with Horizon data when it arrives
 4. **Heartbeat detected** updates the service node TTL bar and appends a "heartbeat" row
@@ -110,9 +110,9 @@ The orchestrator runs outside React (initialized once at module load in `src/app
 
 | Source | Store | Poll interval | What it provides |
 |--------|-------|---------------|------------------|
-| Soroban RPC | `soroban-store` | 15s | Policy config, today's spend, lifetime stats, registry services per capability, contract events |
-| Horizon REST | `horizon-wallet-data-store` | 20s | USDC balance and account status per tracked wallet |
-| Horizon REST | `horizon-payment-store` | 20s | USDC payment history (sent and received) |
+| Soroban RPC | `soroban-store` | 15s | Policy config, today's spend, lifetime stats, on-chain capability list (`list_capabilities`), registry services per capability, contract events |
+| Horizon REST | `horizon-wallet-data-store` | 20s | USDC balance and account status per tracked wallet. Reads `/operations` and parses `asset_balance_changes` to capture SAC transfers (Soroban USDC moves do not appear in classic `/payments`) |
+| Horizon REST (EventSource) | `horizon-payment-store` | live stream | USDC payment events. Subscribes to `/accounts/{addr}/operations?cursor=now` and fans `invoke_host_function` ops with `asset_balance_changes` into per-transfer events |
 | `ws-server :8080` | `ws-budget-store` | real-time | `budget:updated` and `spend:ok` events |
 
 ### Configuration
@@ -127,7 +127,23 @@ Defaults are in `src/lib/constants.ts`. Override via URL search params:
 
 The wallet list is persisted to `localStorage` under `x402-autopilot.wallets.v1`. Two default wallets are seeded (`Main wallet` and `Analyst agent`); add more via the header input field.
 
-`SEED_CAPABILITIES` in `constants.ts` polls the six live agent capabilities on every refresh: `crypto_prices`, `news`, `briefing`, `blockchain`, `market_intelligence`, `analysis`. New capabilities discovered from `register` events in the last `EVENT_LOOKBACK_LEDGERS` (17,280 ledgers, ~24 h) are merged in automatically.
+`SEED_CAPABILITIES` in `constants.ts` is the bootstrap list used on the first poll before the on-chain capability index is reachable. It contains the six built-in agents: `crypto_prices`, `news`, `briefing`, `blockchain`, `market_intelligence`, `analysis`. After the first successful `list_capabilities` simulate, the live on-chain set is merged in. Capabilities seen in `register` events from the last `EVENT_LOOKBACK_LEDGERS` (17,280 ledgers, ~24 h) are merged as well, covering the brief window between a service registering and the next `list_capabilities` poll.
+
+Three sources for capability discovery, all merged into one Set in `soroban-store.ts`:
+
+```mermaid
+flowchart LR
+    SEED["SEED_CAPABILITIES<br/>constants.ts"]
+    LCAP["list_capabilities<br/>v3 contract poll"]
+    EV["register events<br/>fetchEvents"]
+    SET["this.capabilities (Set)"]
+
+    SEED -->|bootstrap| SET
+    LCAP -->|every poll| SET
+    EV -->|every poll| SET
+```
+
+A capability lasts for the lifetime of the store once it enters the Set. None of the three sources prunes; the on-chain `CapName(u32)` index never shrinks.
 
 ## Directory layout
 
@@ -170,11 +186,11 @@ contract-explorer/src/        7001 lines, 48 files
     use-soroban.ts               12  Soroban store hook
     use-live-edges.ts            11  edge animation hook
 
-  stores/                      2947  Zustand state management
+  stores/                      3056  Zustand state management
     payment-orchestrator.ts    1027  cross-store wiring
-    horizon-wallet-data-store   470  Horizon balance polling
-    soroban-store               363  Soroban RPC polling
-    horizon-payment-store       333  Horizon payment history
+    horizon-wallet-data-store   525  Horizon poll, /operations + asset_balance_changes
+    soroban-store               392  Soroban RPC polling, dynamic list_capabilities
+    horizon-payment-store       358  Horizon /operations event stream
     dashboard-store             157  feed + pulse state
     ws-budget-store             147  WebSocket client
     live-edge-store             139  bullet animation queue
@@ -182,12 +198,12 @@ contract-explorer/src/        7001 lines, 48 files
     node-positions-store        117  draggable node positions
     external-store               62  external data bridge
 
-  lib/                         1024  helpers and types
-    soroban-rpc.ts              481  Soroban simulate + event decode
+  lib/                         1113  helpers and types
+    soroban-rpc.ts              520  Soroban simulate + event decode + list_capabilities
     types.ts                    261  TypeScript types for contracts
+    horizon.ts                  127  normalisePayment (returns array per op)
     utils.ts                    106  formatters, classnames
     constants.ts                 99  defaults, polling intervals, seed caps
-    horizon.ts                   77  Horizon REST client
 ```
 
 ## Tech stack

@@ -71,7 +71,7 @@ Update the on-chain spending policy. Owner authorization is required (the engine
 
 ### autopilot_registry_status
 
-Aggregate `list_services` calls across the four built-in capability names hardcoded in `mcp-server/src/index.ts:513` (`weather`, `news`, `blockchain`, `analysis`). Returns total alive services. Note that the live agent network registers under additional capabilities (`crypto_prices`, `briefing`, `market_intelligence`); use `autopilot_discover` with explicit capability names to query those.
+Read the on-chain capability set via `list_capabilities` (the v3 trust-registry's `CapName(u32)` index), then aggregate `list_services` for each capability and return the union. Falls back to a hardcoded 6-entry list (`crypto_prices`, `news`, `briefing`, `blockchain`, `market_intelligence`, `analysis`) if the registry RPC returns an empty list or fails. New capabilities registered against the contract appear automatically without code changes.
 
 **Input:** none
 **Returns:** `{ total, alive, services }`
@@ -94,7 +94,7 @@ Three of the agents (News Intelligence, Market Intelligence, Analyst) buy data f
 ## On-chain contracts
 
 - **wallet-policy** (Soroban): enforces daily limit, per-tx cap, rate limit (per minute), recipient allowlist, and time window. All amounts in i128 stroops (1 USDC = 10,000,000 stroops). 8 public functions in `contracts/wallet-policy/src/lib.rs`.
-- **trust-registry** (Soroban): TTL-based service directory with $0.01 USDC anti-spam deposit, quality score tracking, and crash-recovery deposit reclaim. 8 public functions in `contracts/trust-registry/src/lib.rs`.
+- **trust-registry v3** (Soroban): TTL-based service directory with $0.01 USDC anti-spam deposit, quality score tracking, crash-recovery deposit reclaim, and a paginated `CapName(u32)` capability index for on-chain discovery. 10 public functions in `contracts/trust-registry/src/lib.rs`, including `list_capabilities(start, limit)` and `get_capability_count()`.
 
 Both contracts are deployable to Stellar testnet via the scripts in `scripts/`.
 
