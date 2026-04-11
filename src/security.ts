@@ -8,7 +8,7 @@ import { SecurityError } from "./types.js";
 const PRIVATE_PREFIXES = ["10.", "127.", "0.", "169.254.", "192.168."];
 
 /** Check if hostname is a private/reserved IP address. */
-export function isPrivateIP(hostname: string): boolean {
+function isPrivateIP(hostname: string): boolean {
   // Direct matches
   if (hostname === "0.0.0.0" || hostname === "[::]" || hostname === "[::1]") {
     return true;
@@ -78,6 +78,13 @@ export function validateUrl(url: string): void {
  * "$0.001" → 10000n, "10000" → 10000n
  *
  * This is the ONLY place parseFloat is allowed per CLAUDE.md Rule 2.
+ *
+ * Defensive bounds:
+ *   - Negative, NaN, and Infinity are rejected.
+ *   - Dollar amounts so large that `dollars * 10_000_000` exceeds
+ *     `Number.MAX_SAFE_INTEGER` are rejected.  Above that point JavaScript
+ *     numbers lose integer precision and `BigInt(...)` either throws or
+ *     silently builds a wrong value — neither is acceptable for money math.
  */
 export function parsePriceStroops(priceString: string): bigint {
   if (priceString.startsWith("$")) {
@@ -85,7 +92,11 @@ export function parsePriceStroops(priceString: string): bigint {
     if (!Number.isFinite(dollars) || dollars < 0) {
       throw new SecurityError("INVALID_PRICE");
     }
-    return BigInt(Math.round(dollars * 10_000_000));
+    const stroopsFloat = dollars * 10_000_000;
+    if (stroopsFloat > Number.MAX_SAFE_INTEGER) {
+      throw new SecurityError("INVALID_PRICE");
+    }
+    return BigInt(Math.round(stroopsFloat));
   }
   const raw = priceString.trim();
   if (!/^\d+$/.test(raw)) {
@@ -94,24 +105,3 @@ export function parsePriceStroops(priceString: string): bigint {
   return BigInt(raw);
 }
 
-// ---------------------------------------------------------------------------
-// Rate limiter — sliding window
-// ---------------------------------------------------------------------------
-
-export class RateLimiter {
-  private timestamps: number[] = [];
-
-  constructor(private readonly maxPerMinute: number) {}
-
-  /** Returns true if the request is within rate limit. */
-  check(): boolean {
-    const now = Date.now();
-    this.timestamps = this.timestamps.filter((t) => now - t < 60_000);
-    return this.timestamps.length < this.maxPerMinute;
-  }
-
-  /** Record a request timestamp. Call after successful check(). */
-  record(): void {
-    this.timestamps.push(Date.now());
-  }
-}

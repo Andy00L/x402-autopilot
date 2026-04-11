@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { autopilotFetch } from "../../src/autopay.js";
@@ -12,7 +13,9 @@ import * as policyClient from "../../src/policy-client.js";
 import * as registryClient from "../../src/registry-client.js";
 import { PolicyDeniedError } from "../../src/types.js";
 import { config } from "../../src/config.js";
+import { eventBus } from "../../src/event-bus.js";
 import type { AutopilotResult, ServiceInfo, BudgetInfo } from "../../src/types.js";
+import { WebSocket } from "ws";
 
 // ---------------------------------------------------------------------------
 // BigInt-safe JSON serializer
@@ -27,20 +30,109 @@ function toJson(value: unknown): string {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Response helpers — consistent shape for every tool
-// ---------------------------------------------------------------------------
-
-function ok(data: Record<string, unknown>): {
-  content: Array<{ type: "text"; text: string }>;
-} {
-  return { content: [{ type: "text", text: toJson(data) }] };
+// Recursively convert BigInts to strings in any value.  Used to build
+// `structuredContent` payloads, which the MCP SDK serializes via JSON and
+// will throw on raw BigInt.
+function bigintsToStrings(value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.map(bigintsToStrings);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = bigintsToStrings(v);
+    }
+    return out;
+  }
+  return value;
 }
 
-function fail(err: unknown): {
-  content: Array<{ type: "text"; text: string }>;
-  isError: true;
-} {
+// ---------------------------------------------------------------------------
+// Response helpers — Claude Desktop-friendly tool result shape
+//
+// Lessons learned (the original "weather tool not responding" bug):
+//
+//   1. Wrapping the actual API payload inside `{ data, cost_stroops, ... }`
+//      and JSON-stringifying the whole thing forced Claude to dig the data
+//      out of a metadata envelope.  When the inner data was the natural
+//      "answer" to the user's question (e.g. weather), Claude often gave up
+//      and fell back to a built-in tool.  We now put the unwrapped payload
+//      directly in the `content` text and keep metadata only in
+//      `structuredContent`, which Claude can read for cost / tx info but
+//      won't confuse with the answer.
+//
+//   2. `isError: true` makes Claude Desktop treat the result as a failed
+//      tool call, which triggers a fallback.  Use it ONLY for genuine tool
+//      failures (uncaught exceptions, missing args).  Normal-flow signals
+//      like a policy denial are reported with `isError` UNSET so Claude can
+//      relay the reason to the user without abandoning the tool.
+//
+//   3. Every tool result MUST be MCP-safe: BigInt is not JSON-serializable,
+//      so both `content` text and `structuredContent` are scrubbed via
+//      `bigintsToStrings` / `toJson` before leaving this file.
+// ---------------------------------------------------------------------------
+
+// We use the SDK's own CallToolResult type so the request handler return
+// signature matches setRequestHandler's expectations exactly.
+type ToolResult = CallToolResult;
+
+/**
+ * Successful tool result.
+ *
+ * @param payload - the unwrapped data the user actually asked for.  Strings
+ *   are passed through verbatim; objects/arrays are JSON-pretty-printed.
+ * @param meta - optional metadata (cost, tx hash, budget, …) that goes into
+ *   `structuredContent` so Claude can access it without seeing it in the
+ *   conversational reply.
+ */
+function ok(payload: unknown, meta?: Record<string, unknown>): ToolResult {
+  const text =
+    typeof payload === "string"
+      ? payload
+      : toJson(payload);
+
+  const result: ToolResult = {
+    content: [{ type: "text", text }],
+  };
+
+  if (meta !== undefined) {
+    result.structuredContent = bigintsToStrings(meta) as Record<string, unknown>;
+  }
+
+  return result;
+}
+
+/**
+ * Soft failure: a normal-flow error condition (policy denied, no service
+ * found, etc.) that the tool wants to communicate to the user without
+ * making Claude Desktop think the tool itself is broken.
+ *
+ * Returns a regular content block — `isError` is intentionally unset.
+ */
+function softFail(
+  reason: string,
+  detail: string,
+  meta?: Record<string, unknown>,
+): ToolResult {
+  const text = `${reason}: ${detail}`;
+  const result: ToolResult = {
+    content: [{ type: "text", text }],
+  };
+  if (meta !== undefined) {
+    result.structuredContent = bigintsToStrings({
+      error: reason,
+      message: detail,
+      ...meta,
+    }) as Record<string, unknown>;
+  }
+  return result;
+}
+
+/**
+ * Hard failure: an unexpected exception bubbled out of the tool body.
+ * Sets `isError: true` so the MCP client treats it as a tool failure.
+ * Sanitises any Stellar secret keys or bearer tokens before returning.
+ */
+function fail(err: unknown): ToolResult {
   const error = err instanceof Error ? err : new Error(String(err));
   // Sanitize: never include secrets in error output (CLAUDE.md Rule 4)
   const message = error.message
@@ -51,9 +143,10 @@ function fail(err: unknown): {
     content: [
       {
         type: "text",
-        text: toJson({ error: error.name, message }),
+        text: `${error.name}: ${message}`,
       },
     ],
+    structuredContent: { error: error.name, message },
     isError: true,
   };
 }
@@ -219,7 +312,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 async function handlePayAndFetch(
   args: Record<string, unknown>,
-) {
+): Promise<ToolResult> {
   try {
     const url = String(args.url ?? "");
     if (!url) return fail(new Error("Missing required parameter: url"));
@@ -229,27 +322,28 @@ async function handlePayAndFetch(
     const result: AutopilotResult = await autopilotFetch(url, { method, body });
     const budget = budgetTracker.getBudget();
 
-    return ok({
-      data: result.data,
+    // The unwrapped data is the conversational answer; payment metadata
+    // travels in structuredContent so Claude can read it without seeing it
+    // jumbled into the user-facing reply.  This is the fix for the
+    // "weather tool not responding correctly" bug.
+    return ok(result.data, {
       cost_stroops: result.costStroops,
       protocol: result.protocol,
       tx_hash: result.txHash ?? null,
+      url,
       budget: budgetSnapshot(budget),
     });
   } catch (err) {
     if (err instanceof PolicyDeniedError) {
+      // Policy denial is a normal operating condition.  Returning a soft
+      // failure (no isError flag) lets Claude relay the reason without
+      // treating the tool as broken.
       const budget = budgetTracker.getBudget();
-      return {
-        content: [{
-          type: "text" as const,
-          text: toJson({
-            error: "PolicyDeniedError",
-            reason: err.reason,
-            budget: budgetSnapshot(budget),
-          }),
-        }],
-        isError: true as const,
-      };
+      return softFail(
+        "PolicyDeniedError",
+        `Spending policy denied this request: ${err.reason}`,
+        { reason: err.reason, budget: budgetSnapshot(budget) },
+      );
     }
     return fail(err);
   }
@@ -257,7 +351,7 @@ async function handlePayAndFetch(
 
 async function handleResearch(
   args: Record<string, unknown>,
-) {
+): Promise<ToolResult> {
   try {
     let urls: string[];
 
@@ -307,25 +401,30 @@ async function handleResearch(
     }
 
     const budget = budgetTracker.getBudget();
-    return ok({
-      results,
-      errors,
-      total_cost_stroops: totalCost,
-      budget: budgetSnapshot(budget),
-    });
+    // Text content: the array of fetched payloads (the answer).  Metadata
+    // (per-source costs, errors, budget) lives in structuredContent.
+    return ok(
+      results.map((r) => r.data),
+      {
+        results,
+        errors,
+        total_cost_stroops: totalCost,
+        budget: budgetSnapshot(budget),
+      },
+    );
   } catch (err) {
     return fail(err);
   }
 }
 
-async function handleCheckBudget() {
+async function handleCheckBudget(): Promise<ToolResult> {
   try {
     // Sync from chain for fresh data
     await budgetTracker.syncFromSoroban();
     const budget = budgetTracker.getBudget();
     const lifetime = await policyClient.getLifetimeStats();
 
-    return ok({
+    const payload = {
       spent_today: budget.spentToday,
       remaining: budget.remaining,
       daily_limit: budget.dailyLimit,
@@ -334,7 +433,8 @@ async function handleCheckBudget() {
         tx_count: lifetime.txCount,
         denied_count: lifetime.deniedCount,
       },
-    });
+    };
+    return ok(payload, payload);
   } catch (err) {
     return fail(err);
   }
@@ -342,7 +442,7 @@ async function handleCheckBudget() {
 
 async function handleDiscover(
   args: Record<string, unknown>,
-) {
+): Promise<ToolResult> {
   try {
     const capability =
       typeof args.capability === "string" ? args.capability : "weather";
@@ -350,11 +450,13 @@ async function handleDiscover(
       typeof args.limit === "number" ? args.limit : 10;
 
     const services = await discoverServices(capability, 0, limit);
+    const serialized = services.map(serializeService);
 
-    return ok({
-      services: services.map(serializeService),
+    return ok(serialized, {
+      services: serialized,
       total: services.length,
-      source: "bazaar+registry",
+      capability,
+      source: "bazaar+registry+xlm402",
     });
   } catch (err) {
     return fail(err);
@@ -363,7 +465,7 @@ async function handleDiscover(
 
 async function handleSetPolicy(
   args: Record<string, unknown>,
-) {
+): Promise<ToolResult> {
   try {
     const dailyLimit =
       typeof args.daily_limit_stroops === "string"
@@ -391,20 +493,21 @@ async function handleSetPolicy(
       0n, // time_end: 0 = no restriction
     );
 
-    return ok({
+    const payload = {
       tx_hash: txHash,
       policy: {
         daily_limit_stroops: effectiveDaily,
         per_tx_limit_stroops: effectivePerTx,
         rate_limit: effectiveRate,
       },
-    });
+    };
+    return ok(payload, payload);
   } catch (err) {
     return fail(err);
   }
 }
 
-async function handleRegistryStatus() {
+async function handleRegistryStatus(): Promise<ToolResult> {
   try {
     // v2: services are per-capability. Query known capabilities.
     const KNOWN_CAPS = ["weather", "news", "blockchain", "analysis"];
@@ -420,11 +523,19 @@ async function handleRegistryStatus() {
     }
 
     // In v2, all returned services are alive (temporary storage ensures this)
-    return ok({
-      total: allServices.length,
-      alive: allServices.length,
-      services: allServices.map(serializeService),
-    });
+    const serialized = allServices.map(serializeService);
+    return ok(
+      {
+        total: allServices.length,
+        alive: allServices.length,
+        services: serialized,
+      },
+      {
+        total: allServices.length,
+        alive: allServices.length,
+        services: serialized,
+      },
+    );
   } catch (err) {
     return fail(err);
   }
@@ -461,4 +572,50 @@ async function main(): Promise<void> {
 main().catch((err) => {
   process.stderr.write(`MCP server fatal: ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
+});
+
+// ---------------------------------------------------------------------------
+// Relay eventBus events to the ws-server for instant dashboard bullets.
+//
+// The ws-server (port 8080) and this MCP server are separate processes.
+// We connect as a WebSocket client and forward spend:ok events so the
+// dashboard receives them within milliseconds instead of waiting for the
+// ws-server's 5-second Soroban poll cycle.
+// ---------------------------------------------------------------------------
+
+const WS_RELAY_URL = `ws://localhost:${config.wsPort}`;
+let relayWs: WebSocket | null = null;
+let relayBackoff = 1_000;
+
+function connectRelay(): void {
+  try {
+    const ws = new WebSocket(WS_RELAY_URL);
+    ws.on("open", () => {
+      relayWs = ws;
+      relayBackoff = 1_000;
+    });
+    ws.on("close", () => {
+      relayWs = null;
+      relayBackoff = Math.min(relayBackoff * 2, 10_000);
+      setTimeout(connectRelay, relayBackoff);
+    });
+    ws.on("error", () => {
+      // onclose will fire next — let it handle reconnect.
+    });
+  } catch {
+    setTimeout(connectRelay, relayBackoff);
+  }
+}
+
+// Delay first connect: ws-server may not be up yet.
+setTimeout(connectRelay, 2_000);
+
+// Forward spend:ok events from the autopay engine to the ws-server.
+eventBus.on("spend:ok", (data) => {
+  if (relayWs && relayWs.readyState === WebSocket.OPEN) {
+    relayWs.send(JSON.stringify(
+      { _relay: true, event: "spend:ok", data },
+      (_k: string, v: unknown) => (typeof v === "bigint" ? v.toString() : v),
+    ));
+  }
 });

@@ -3,9 +3,9 @@
  * Replaces noisy concurrently output with a clean, updating display.
  * Zero NEW dependencies. Uses Node.js built-ins + ws (already installed).
  *
- * Spawns: ws-server, weather, news, stellar-data, analyst, vite dashboard.
- * Does NOT spawn: MCP server (started by Claude Desktop via stdio).
- * All child output goes to a timestamped log file in logs/.
+ * Spawns: ws-server, crypto prices, news agent, market agent, analyst,
+ * vite dashboard. Does NOT spawn: MCP server (started by Claude Desktop
+ * via stdio). All child output goes to a timestamped log file in logs/.
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
@@ -55,18 +55,18 @@ interface SvcState {
 interface TxInfo { service: string; cost: number; time: number }
 
 const services: SvcState[] = [
-  { name: "engine",  label: "WS Server",    port: 8080, protocol: "ws",   price: "",       status: "starting", lastHB: 0 },
-  { name: "weather", label: "Weather API",  port: 4001, protocol: "x402", price: "$0.001",  status: "starting", lastHB: 0 },
-  { name: "news",    label: "News API",     port: 4002, protocol: "x402", price: "$0.001",  status: "starting", lastHB: 0 },
-  { name: "stellar", label: "Stellar Data", port: 4003, protocol: "mpp",  price: "$0.002",  status: "starting", lastHB: 0 },
-  { name: "analyst", label: "Analyst",      port: 4004, protocol: "x402", price: "$0.005",  status: "starting", lastHB: 0 },
-  { name: "vite",    label: "Dashboard",    port: 5173, protocol: "http", price: "",       status: "starting", lastHB: 0 },
+  { name: "engine",  label: "WS Server",    port: 8080, protocol: "ws",       price: "",        status: "starting", lastHB: 0 },
+  { name: "crypto",  label: "Crypto Prices",port: 4001, protocol: "x402",     price: "$0.001",  status: "starting", lastHB: 0 },
+  { name: "news",    label: "News Agent",   port: 4002, protocol: "x402",     price: "$0.001",  status: "starting", lastHB: 0 },
+  { name: "market",  label: "Market Agent", port: 4003, protocol: "mpp+x402", price: "$0.002",  status: "starting", lastHB: 0 },
+  { name: "analyst", label: "Analyst",      port: 4004, protocol: "x402",     price: "$0.005",  status: "starting", lastHB: 0 },
+  { name: "vite",    label: "Dashboard",    port: 5180, protocol: "http",     price: "",        status: "starting", lastHB: 0 },
 ];
 
 let budget = { spent: 0, limit: 5_000_000, txCount: 0 };
 let lastTx: TxInfo | null = null;
 let logPath = "";
-let dashboardUrl = "http://localhost:5173";
+let dashboardUrl = "http://localhost:5180";
 let wsConnected = false;
 const startedAt = Date.now();
 
@@ -92,7 +92,7 @@ function log(tag: string, line: string): void {
 // FIX 1: Kill leftover processes on ports before spawning
 // ---------------------------------------------------------------------------
 
-const PORTS = [8080, 4001, 4002, 4003, 4004, 5173, 5174, 5175];
+const PORTS = [8080, 4001, 4002, 4003, 4004, 5180, 5181, 5182];
 
 function killPorts(): void {
   for (const port of PORTS) {
@@ -268,9 +268,9 @@ function handleWsEvent(msg: Record<string, unknown>): void {
       const urlStr = String(data.url ?? "unknown");
       // Extract service name from URL
       let svcName = "unknown";
-      if (urlStr.includes("4001") || urlStr.includes("weather")) svcName = "weather";
-      else if (urlStr.includes("4002") || urlStr.includes("news")) svcName = "news";
-      else if (urlStr.includes("4003") || urlStr.includes("stellar")) svcName = "stellar";
+      if (urlStr.includes("4001") || urlStr.includes("prices")) svcName = "crypto";
+      else if (urlStr.includes("4002") || urlStr.includes("news") || urlStr.includes("briefing")) svcName = "news";
+      else if (urlStr.includes("4003") || urlStr.includes("stellar") || urlStr.includes("market-report")) svcName = "market";
       else if (urlStr.includes("4004") || urlStr.includes("analyst")) svcName = "analyst";
       else if (urlStr.includes("xlm402")) svcName = "xlm402.com";
       else svcName = urlStr.slice(0, 30);
@@ -428,13 +428,17 @@ function main(): void {
   // Enter alternative screen
   process.stdout.write(A.enterAlt + A.hideCur + A.clear);
 
-  // Spawn processes
+  // Spawn processes. Service names match the `services` array above so
+  // `findSvc(name)` can update status for each stream. Filenames on disk
+  // are kept as `weather-api.ts` / `stellar-data-api.ts` so
+  // data-sources/package.json scripts continue to work; only the
+  // CLI-visible names and the content of those files have changed.
   spawnSvc("engine",  "npx", ["tsx", "src/ws-server.ts"]);
-  spawnSvc("weather", "npx", ["tsx", "data-sources/src/weather-api.ts"]);
+  spawnSvc("crypto",  "npx", ["tsx", "data-sources/src/weather-api.ts"]);
   spawnSvc("news",    "npx", ["tsx", "data-sources/src/news-api.ts"]);
-  spawnSvc("stellar", "npx", ["tsx", "data-sources/src/stellar-data-api.ts"]);
+  spawnSvc("market",  "npx", ["tsx", "data-sources/src/stellar-data-api.ts"]);
   spawnSvc("analyst", "npx", ["tsx", "data-sources/src/analyst-api.ts"]);
-  spawnSvc("vite",    "npx", ["vite", "dashboard", "--host"]);
+  spawnSvc("vite",    "npm", ["run", "dev", "--silent"], "contract-explorer");
 
   // FIX 3: Connect to ws-server for live budget events
   connectWebSocket();

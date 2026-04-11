@@ -1,0 +1,284 @@
+/* React Flow base styles — @import must precede @tailwind directives per
+ * CSS spec. Our own overrides under `.network-graph` later in the file
+ * still win by specificity + source order. */
+@import "@xyflow/react/dist/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Premium fintech light theme. No dark mode toggle. Every token below is
+ * tuned for a white canvas with subtle slate borders and restrained
+ * accent colours (emerald / rose / blue). Tailwind's semantic classes
+ * resolve against these HSL variables, so shadcn primitives pick up the
+ * palette automatically while component-level classes use the literal
+ * `slate-*` / `emerald-*` / `blue-*` utilities from the color table.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+@layer base {
+  :root {
+    /* slate-50 */    --background: 210 40% 98%;
+    /* slate-900 */   --foreground: 222 47% 11%;
+    /* white */       --card: 0 0% 100%;
+    /* slate-900 */   --card-foreground: 222 47% 11%;
+    /* white */       --popover: 0 0% 100%;
+    /* slate-900 */   --popover-foreground: 222 47% 11%;
+    /* blue-600 */    --primary: 221 83% 53%;
+    /* white */       --primary-foreground: 0 0% 100%;
+    /* slate-100 */   --secondary: 210 40% 96%;
+    /* slate-700 */   --secondary-foreground: 215 25% 27%;
+    /* slate-100 */   --muted: 210 40% 96%;
+    /* slate-500 */   --muted-foreground: 215 16% 47%;
+    /* slate-100 */   --accent: 210 40% 96%;
+    /* slate-700 */   --accent-foreground: 215 25% 27%;
+    /* rose-500 */    --destructive: 350 89% 60%;
+    /* white */       --destructive-foreground: 0 0% 100%;
+    /* emerald-600 */ --success: 160 84% 35%;
+    /* white */       --success-foreground: 0 0% 100%;
+    /* amber-500 */   --warning: 38 92% 50%;
+    /* slate-900 */   --warning-foreground: 222 47% 11%;
+    /* blue-600 */    --info: 221 83% 53%;
+    /* white */       --info-foreground: 0 0% 100%;
+    /* slate-200 */   --border: 214 32% 91%;
+    /* slate-200 */   --input: 214 32% 91%;
+    /* blue-500 */    --ring: 217 91% 60%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family:
+      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv11", "ss01", "ss03";
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900;
+    /* 100vh, no scroll — the graph + feed fill exactly the viewport and
+     * the feed scrolls internally only. */
+    overflow: hidden;
+  }
+
+  /* Numbers always tabular for clean alignment */
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum", "zero";
+  }
+
+  /* Premium scrollbar — light slate thumb that reads clearly on white. */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1; /* slate-300 */
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8; /* slate-400 */
+    background-clip: content-box;
+  }
+
+  :focus-visible {
+    outline: 2px solid #3b82f6; /* blue-500 */
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Network graph — React Flow overrides + live animations tuned for light.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+.network-graph {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: #cbd5e1;           /* slate-300 */
+  --xy-edge-stroke-width: 1;
+  --xy-node-border-radius: 12px;
+  --xy-controls-button-background-color: #ffffff;
+  --xy-controls-button-border-color: #e2e8f0; /* slate-200 */
+}
+
+.network-graph .react-flow__pane,
+.network-graph .react-flow {
+  background-color: transparent;
+}
+
+/* Kill the default React Flow selection outline on custom nodes — our
+ * nodes draw their own borders and the double outline looks messy. */
+.network-graph .react-flow__node.selected,
+.network-graph .react-flow__node:focus,
+.network-graph .react-flow__node:focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5) !important; /* blue-500 / 50% */
+}
+
+/* ─ Node glow pulses ─────────────────────────────────────────────────────
+ *
+ * Emerald / amber pings that expand from the node on every payment.
+ * Tuned for a white background: softer opacity and a slightly tighter
+ * spread than the dark-mode version so they feel subtle, not garish.
+ */
+
+@keyframes node-glow-success {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); /* emerald-500 */
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+@keyframes node-glow-gold {
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45); /* amber-500 */
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(245, 158, 11, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}
+
+.node-glow-success {
+  animation: node-glow-success 2s cubic-bezier(0.16, 1, 0.3, 1) 2;
+}
+.node-glow-gold {
+  animation: node-glow-gold 2s ease 2;
+}
+
+/* ─ Edge styling ─────────────────────────────────────────────────────────
+ *
+ * Payment-related edges are rendered by BulletEdge and use SVG
+ * <animateMotion> for the travelling glow. This CSS only needs to cover
+ * the ownership line style.
+ */
+
+.network-graph .react-flow__edge-path.edge-ownership {
+  fill: none;
+  stroke: #94a3b8; /* slate-400 */
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+}
+
+/* ─ Service heartbeat ping rings ────────────────────────────────────────
+ *
+ * Concentric circles expand from a fixed origin near the ♥ indicator on
+ * every service node. Three copies are staggered by the component and
+ * share one keyframe to keep the CSS cost flat. The ring radius animates
+ * via the SVG `r` attribute, which Chromium / Firefox / Safari 16+ all
+ * support from CSS. */
+
+@keyframes heartbeat-ring-expand {
+  0% {
+    r: 6;
+    opacity: 0.55;
+    stroke-width: 1.5;
+  }
+  80% {
+    opacity: 0.05;
+  }
+  100% {
+    r: 32;
+    opacity: 0;
+    stroke-width: 0.3;
+  }
+}
+
+.heartbeat-ring {
+  animation: heartbeat-ring-expand 2.1s ease-out forwards;
+  transform-origin: center;
+}
+
+/* ─ Streaming indicator dot ─────────────────────────────────────────────── */
+
+@keyframes streaming-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.streaming-dot {
+  animation: streaming-dot-pulse 2s ease-in-out infinite;
+}
+
+/* ─ Feed row entrance + bar fill ───────────────────────────────────────── */
+
+@keyframes feed-event-enter {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.feed-event {
+  animation: feed-event-enter 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes feed-bar-fill {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+.feed-bar-fill {
+  animation: feed-bar-fill 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  width: 0%;
+}
+
+/* ─ Respect the system reduced-motion preference ───────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .feed-bar-fill {
+    width: 100%;
+  }
+  /* No expanding ping rings under reduced motion. The ♥ TTL text on
+   * each service node still updates numerically. */
+  .heartbeat-ring {
+    display: none;
+  }
+}

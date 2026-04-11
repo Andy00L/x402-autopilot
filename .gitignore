@@ -21,6 +21,7 @@ target/
 
 # Claude Code
 .claude/
+.agents/
 CLAUDE.md
 # IDE
 .vscode/
@@ -48,3 +49,4 @@ BUILD-PROMPTS.md
 CLAUDE.md
 PROBLEMS.md
 TRUST-REGISTRY-V2.md
+contract-explorer/reference/

@@ -4,7 +4,6 @@ import { AsyncMutex } from "./mutex.js";
 import { eventBus } from "./event-bus.js";
 import { budgetTracker } from "./budget-tracker.js";
 import * as policyClient from "./policy-client.js";
-import * as registryClient from "./registry-client.js";
 import { detect } from "./protocol-detector.js";
 import { invalidateService } from "./discovery.js";
 import {
@@ -37,8 +36,7 @@ const mutex = new AsyncMutex();
  * 10-11. Read body ONCE, safe JSON parse
  * 12-14. Record spend on-chain
  * 15-16. Update local budget + emit event
- * 17. Report quality (fire-and-forget)
- * 18. Return result
+ * 17. Return result
  */
 export interface FetchOptions {
   method?: string;
@@ -77,7 +75,7 @@ export async function autopilotFetch(
     // Some servers (e.g. xlm402.com) return 200 on HEAD but 402 on GET.
     // If the GET returns 402, re-detect from the response and fall through to payment.
     if (protocol === "free") {
-      const freeResponse = await fetch(url, { ...fetchInit, signal: AbortSignal.timeout(10_000) });
+      const freeResponse = await fetch(url, { ...fetchInit, signal: AbortSignal.timeout(60_000) });
       if (freeResponse.status !== 402) {
         const text = await freeResponse.text();
         let data: unknown;
@@ -165,15 +163,19 @@ export async function autopilotFetch(
       amount: priceStroops,
       protocol,
       txHash,
+      recipient: recipient ?? config.stellarPublicKey,
       timestamp: new Date().toISOString(),
     });
 
-    // Step 17: Report quality — fire-and-forget
-    if (recipient) {
-      registryClient.reportQuality(0, true); // serviceId resolved by registry
-    }
+    // (No on-chain quality report here.  An earlier version called
+    // registryClient.reportQuality(0, true) — but it had no way to
+    // resolve the recipient address back to a service ID, so it was
+    // hardcoded to id 0 and silently failed every time.  Removed to
+    // avoid wasting an RPC call on a guaranteed-failing TX.  Quality
+    // reporting is best done through autopilot_research-style flows
+    // where the caller already knows the service ID.)
 
-    // Step 18: Return result
+    // Step 17: Return result
     return { data, costStroops: priceStroops, protocol, txHash };
 
   } catch (err) {
@@ -213,8 +215,10 @@ export async function autopilotFetch(
         timestamp: new Date().toISOString(),
       });
 
-      // Report bad quality
-      registryClient.reportQuality(0, false);
+      // (Same reasoning as the success path: no quality report here
+      // because we cannot resolve a recipient back to a service ID.
+      // Drop the URL from the discovery cache so the next discover()
+      // doesn't return it again immediately.)
       invalidateService(url);
     }
 
@@ -232,9 +236,12 @@ export async function autopilotFetch(
 
 async function executeX402(url: string, init: RequestInit): Promise<Response> {
   try {
+    // 60s matches executeMpp and the Claude Desktop MCP tool cap.
+    // Paid endpoints that run an LLM (e.g. analyst) need 13–20s total,
+    // so 10s was racing against the analyst's claude -p subprocess.
     const response = await x402Fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(60_000),
     });
     return response;
   } catch (err) {

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "x402-autopilot": {
+      "command": "npx",
+      "args": ["tsx", "mcp-server/src/index.ts"],
+      "cwd": ".",
+      "env": {
+        "ALLOW_HTTP": "true"
+      }
+    }
+  }
+}

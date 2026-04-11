@@ -121,23 +121,12 @@ export interface DetectResult {
 }
 
 // ---------------------------------------------------------------------------
-// Health status
-// ---------------------------------------------------------------------------
-
-export interface HealthStatus {
-  serviceId: number;
-  status: "healthy" | "unhealthy" | "timeout";
-  latencyMs: number;
-  lastChecked: string;
-}
-
-// ---------------------------------------------------------------------------
 // Dashboard events — discriminated union
 // BigInt fields are serialized to string on the wire (see event-bus.ts)
 // ---------------------------------------------------------------------------
 
 export type DashboardEvent =
-  | { event: "spend:ok"; data: { url: string; amount: bigint; protocol: Protocol; txHash: string; timestamp: string } }
+  | { event: "spend:ok"; data: { url: string; amount: bigint; protocol: Protocol; txHash: string; recipient: string; timestamp: string } }
   | { event: "spend:api_error"; data: { url: string; amount: bigint; protocol: Protocol; txHash: string; error: string; timestamp: string } }
   | { event: "spend:failed"; data: { url: string; error: string; timestamp: string } }
   | { event: "denied"; data: { url: string; amount: bigint; reason: string; timestamp: string } }

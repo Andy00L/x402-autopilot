@@ -1,9 +1,9 @@
 import {
   Contract, TransactionBuilder, BASE_FEE,
-  rpc, nativeToScVal, scValToNative, Address,
+  rpc, nativeToScVal, scValToNative,
 } from "@stellar/stellar-sdk";
 import type { xdr } from "@stellar/stellar-sdk";
-import { config, keypair, maskKey } from "./config.js";
+import { config, maskKey } from "./config.js";
 import { SorobanError, NetworkError } from "./types.js";
 import type { ServiceInfo } from "./types.js";
 
@@ -17,9 +17,6 @@ const server = new rpc.Server(config.sorobanRpcUrl, {
 });
 
 const contractId = config.trustRegistryContractId;
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
 // Soroban read helper (simulate only — free, fast)
@@ -75,79 +72,6 @@ async function simulateContract(
 }
 
 // ---------------------------------------------------------------------------
-// Soroban write helper (build, prepare, sign, send, poll)
-// ---------------------------------------------------------------------------
-
-async function invokeContract(
-  functionName: string,
-  args: xdr.ScVal[],
-): Promise<string> {
-  let account;
-  try {
-    account = await server.getAccount(config.stellarPublicKey);
-  } catch (err) {
-    throw new NetworkError(
-      "soroban_rpc",
-      `getAccount failed for ${maskKey(config.stellarPublicKey)}: ${err instanceof Error ? err.message : "unknown"}`,
-    );
-  }
-
-  const contract = new Contract(contractId);
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase,
-  })
-    .addOperation(contract.call(functionName, ...args))
-    .setTimeout(30)
-    .build();
-
-  let prepared;
-  try {
-    prepared = await server.prepareTransaction(tx);
-  } catch (err) {
-    throw new SorobanError(
-      functionName,
-      `prepareTransaction failed: ${err instanceof Error ? err.message : "unknown"}`,
-    );
-  }
-
-  prepared.sign(keypair);
-
-  let sendResult;
-  try {
-    sendResult = await server.sendTransaction(prepared);
-  } catch (err) {
-    throw new NetworkError(
-      "soroban_rpc",
-      `sendTransaction(${functionName}) failed: ${err instanceof Error ? err.message : "unknown"}`,
-    );
-  }
-
-  if (sendResult.status === "ERROR") {
-    throw new SorobanError(
-      functionName,
-      `TX rejected: ${sendResult.errorResult?.toXDR("base64") ?? "unknown"}`,
-    );
-  }
-
-  const MAX_POLLS = 15;
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await sleep(1_000);
-    let getResult;
-    try {
-      getResult = await server.getTransaction(sendResult.hash);
-    } catch {
-      continue;
-    }
-    if (getResult.status === "NOT_FOUND") continue;
-    if (getResult.status === "SUCCESS") return sendResult.hash;
-    throw new SorobanError(functionName, `TX failed: ${getResult.status}`);
-  }
-
-  throw new SorobanError(functionName, `TX confirmation timeout (hash: ${sendResult.hash})`);
-}
-
-// ---------------------------------------------------------------------------
 // Convert raw Soroban ServiceInfo to our TypeScript ServiceInfo
 // ---------------------------------------------------------------------------
 
@@ -170,6 +94,15 @@ function toServiceInfo(raw: Record<string, unknown>): ServiceInfo {
 /**
  * List services filtered by capability, minimum trust score, and limit.
  * Uses simulate (read-only in TS). Heartbeat handles CapIndex cleanup.
+ *
+ * NOTE: this is the ONLY public function in this module.  An earlier
+ * iteration also exported getService / heartbeat / deregister / reportQuality
+ * write helpers, but every actual write path lives in
+ * data-sources/src/shared.ts (services manage their own registration
+ * lifecycle there) and the autopay flow no longer reports quality (it had
+ * no way to resolve a recipient address to a service id, so the calls were
+ * silently failing on a hardcoded id 0).  The unused write helpers were
+ * removed to keep this file as a small, focused read-only client.
  */
 export async function listServices(
   capability: string,
@@ -184,47 +117,4 @@ export async function listServices(
 
   if (!Array.isArray(result)) return [];
   return (result as Record<string, unknown>[]).map(toServiceInfo);
-}
-
-/**
- * Get a single service by ID.
- */
-export async function getService(serviceId: number): Promise<ServiceInfo> {
-  const result = await simulateContract("get_service", [
-    nativeToScVal(serviceId, { type: "u32" }),
-  ]);
-  return toServiceInfo(result as Record<string, unknown>);
-}
-
-/**
- * Report quality for a service. Fire-and-forget pattern.
- * Never throws — errors are silently logged.
- */
-export function reportQuality(serviceId: number, success: boolean): void {
-  invokeContract("report_quality", [
-    new Address(config.stellarPublicKey).toScVal(),
-    nativeToScVal(serviceId, { type: "u32" }),
-    nativeToScVal(success),
-  ]).catch(() => {
-    // Fire-and-forget: quality report failure is non-critical
-  });
-}
-
-/**
- * Send heartbeat for a service. Only takes service_id;
- * the contract reads the owner from stored ServiceInfo.
- */
-export async function heartbeat(serviceId: number): Promise<void> {
-  await invokeContract("heartbeat", [
-    nativeToScVal(serviceId, { type: "u32" }),
-  ]);
-}
-
-/**
- * Deregister a service. Removes from temporary + CapIndex, refunds deposit.
- */
-export async function deregister(serviceId: number): Promise<void> {
-  await invokeContract("deregister_service", [
-    nativeToScVal(serviceId, { type: "u32" }),
-  ]);
 }

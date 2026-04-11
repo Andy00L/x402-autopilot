@@ -6,10 +6,11 @@ import * as policyClient from "./policy-client.js";
 // ---------------------------------------------------------------------------
 // WebSocket server for the dashboard.
 //
-// The MCP server and WS server are separate processes. Events emitted in the
-// MCP process do not reach the WS process. Instead, the WS server polls the
-// Soroban contract (the single source of truth) every 5 seconds and broadcasts
-// changes to connected dashboard clients.
+// The MCP server and WS server are separate processes. The MCP process relays
+// eventBus events (spend:ok with recipient) to this server via a WebSocket
+// client connection. This server rebroadcasts them to dashboard clients for
+// instant bullet animations. The 5-second Soroban poll remains as a backup
+// for budget:updated events and spend detection when the MCP relay is offline.
 // ---------------------------------------------------------------------------
 
 const port = config.wsPort;
@@ -28,6 +29,32 @@ function toJson(value: Record<string, unknown>): string {
 
 wss.on("connection", (ws: WebSocket) => {
   sendBudgetToClient(ws).catch(() => {});
+
+  // Handle relayed events from the MCP process. The MCP process connects as
+  // a WebSocket client and sends messages with { _relay: true, event, data }.
+  // We rebroadcast them to all OTHER clients (the dashboard browsers).
+  ws.on("message", (raw) => {
+    try {
+      const msg = JSON.parse(String(raw)) as {
+        _relay?: boolean;
+        event?: string;
+        data?: Record<string, unknown>;
+      };
+      if (!msg._relay || !msg.event) return;
+      const out = toJson({
+        event: msg.event,
+        data: msg.data ?? {},
+        timestamp: new Date().toISOString(),
+      });
+      for (const client of wss.clients) {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(out);
+        }
+      }
+    } catch {
+      // Malformed message from relay. Ignore.
+    }
+  });
 });
 
 async function sendBudgetToClient(ws: WebSocket): Promise<void> {

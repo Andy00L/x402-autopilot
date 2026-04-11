@@ -5,19 +5,21 @@
   "type": "module",
   "workspaces": [
     "mcp-server",
-    "data-sources",
-    "dashboard"
+    "data-sources"
   ],
   "scripts": {
     "build": "tsc --noEmit",
     "build:contracts": "cd contracts/wallet-policy && stellar contract build && cd ../trust-registry && stellar contract build",
+    "predev": "tsx scripts/ensure-service-wallets.ts",
     "dev": "tsx scripts/cli-dashboard.ts",
+    "predev:all": "tsx scripts/ensure-service-wallets.ts",
     "dev:all": "concurrently -n engine,sources,dashboard,mcp \"npm run dev:engine\" \"npm run dev:sources\" \"npm run dev:dashboard\" \"npm run dev:mcp\"",
     "dev:engine": "tsx src/ws-server.ts",
     "dev:sources": "npm run dev --workspace=data-sources",
-    "dev:dashboard": "npm run dev --workspace=dashboard",
+    "dev:dashboard": "npm --prefix contract-explorer run dev",
     "dev:mcp": "npm run dev --workspace=mcp-server",
     "setup:testnet": "tsx scripts/setup-testnet.ts",
+    "setup:service-wallets": "tsx scripts/setup-service-wallets.ts",
     "deploy:wallet-policy": "bash scripts/deploy-wallet-policy.sh",
     "deploy:trust-registry": "bash scripts/deploy-trust-registry.sh",
     "seed:registry": "tsx scripts/seed-registry.ts",
