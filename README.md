@@ -22,11 +22,11 @@ A user asks Claude "build me a market intelligence report on XLM". Claude calls 
 
 ```mermaid
 flowchart TD
-    Claude["Claude Desktop /<br/>OpenClaw agent"] -->|MCP stdio| MCP["mcp-server/<br/>6 tools, 621 lines"]
-    CLI["scripts/cli-dashboard.ts<br/>ANSI terminal"] -->|spawns + WebSocket| WS["src/ws-server.ts<br/>:8080"]
+    Claude["Claude Desktop /<br/>OpenClaw agent"] -->|MCP stdio| MCP["mcp-server/<br/>6 tools, 670 lines"]
+    CLI["scripts/cli-dashboard.ts<br/>ANSI terminal"] -->|spawns + WebSocket| WS["src/ws-server.ts<br/>:8080 (loopback only)"]
     WEB["contract-explorer<br/>:5180 React Flow"] -->|WebSocket| WS
 
-    MCP --> AP["src/autopay.ts<br/>orchestrator, 333 lines"]
+    MCP --> AP["src/autopay.ts<br/>orchestrator, 352 lines"]
     AP --> SEC["src/security.ts<br/>SSRF, BigInt prices"]
     AP --> MX["src/mutex.ts<br/>sequential lock"]
     AP --> PD["src/protocol-detector.ts<br/>HEAD probe"]
@@ -265,36 +265,36 @@ The Market Intelligence agent runs an autonomous monitor on a 90-second interval
 ```
 stelos/
   contracts/
-    wallet-policy/src/lib.rs          353 lines, 8 pub fn
-    trust-registry/src/lib.rs         535 lines, 10 pub fn (v3: list_capabilities + get_capability_count)
-  src/                                12 modules, 1996 lines
-    autopay.ts                        333 lines  payment orchestrator
-    policy-client.ts                  316 lines  Soroban RPC for wallet-policy
+    wallet-policy/src/lib.rs          379 lines, 8 pub fn  (TTL extends on every record_spend)
+    trust-registry/src/lib.rs         561 lines, 10 pub fn (v3: list_capabilities + get_capability_count)
+  src/                                12 modules, 2215 lines
+    policy-client.ts                  402 lines  Soroban RPC for wallet-policy (hash-recovery retries)
+    autopay.ts                        352 lines  payment orchestrator
+    ws-server.ts                      246 lines  WebSocket + 5s poll + MCP relay (loopback origin gate)
     discovery.ts                      231 lines  3-tier discovery pipeline
-    protocol-detector.ts              201 lines  HEAD probe + 402 header parsing
-    ws-server.ts                      197 lines  WebSocket + 5s Soroban polling + MCP relay
-    registry-client.ts                149 lines  Soroban RPC for trust-registry (listServices + listCapabilities)
+    protocol-detector.ts              207 lines  HEAD probe + 402 header parsing (8 KB length cap)
+    security.ts                       195 lines  SSRF (incl. IPv6 + IPv4-mapped) + price parser
+    registry-client.ts                158 lines  Soroban RPC for trust-registry (listServices + listCapabilities)
+    config.ts                         139 lines  env validation + x402/mppx clients
     types.ts                          136 lines  6 error classes + type definitions
-    config.ts                         132 lines  env validation + x402/mppx clients
-    security.ts                       107 lines  SSRF prevention + price parser
     budget-tracker.ts                  88 lines  BigInt local cache
-    event-bus.ts                       65 lines  WebSocket broadcast + bigint serializer
+    event-bus.ts                       71 lines  WebSocket broadcast + bigint serializer
     mutex.ts                           41 lines  sequential payment lock
-  data-sources/src/                   5 files, 2413 lines
+  data-sources/src/                   5 files, 2418 lines
     stellar-data-api.ts               620 lines  MPP /stellar-stats + x402 /market-report + monitor
-    analyst-api.ts                    544 lines  x402 /analyze, agent-to-agent + LLM
+    analyst-api.ts                    549 lines  x402 /analyze, agent-to-agent + LLM
     shared.ts                         532 lines  x402 server, registration, heartbeat, deregister
     news-api.ts                       502 lines  x402 /news + /briefing + LLM
     weather-api.ts                    215 lines  x402 /prices, CoinGecko upstream
-  mcp-server/src/index.ts             642 lines  6 tools, stdio transport, ws relay
+  mcp-server/src/index.ts             670 lines  6 tools, stdio transport, ws relay, set_policy validation
   contract-explorer/src/              48 files, 7199 lines
     stores/  (10 files)              3056 lines  Zustand stores + payment-orchestrator (1027)
     hooks/   (9 files)                860 lines  React hooks (use-graph-layout: 592)
     components/ (12 + 9 ui files)    2090 lines  nodes, edges, layout, shadcn/ui
     lib/ (5 files)                   1113 lines  Soroban RPC, types, constants, Horizon
     app.tsx + main.tsx + types         80 lines  React shell
-  scripts/                            7 TS + 2 bash, 1584 TS lines
-    setup-service-wallets.ts          534 lines  generate, fund, trustline, USDC, allowlist
+  scripts/                            7 TS + 2 bash, 1598 TS lines
+    setup-service-wallets.ts          548 lines  generate, fund, trustline, USDC, allowlist, chmod 600
     cli-dashboard.ts                  472 lines  ANSI terminal dashboard
     ensure-service-wallets.ts         149 lines  predev fast-path
     seed-registry.ts                  121 lines  manual capability registration
@@ -362,6 +362,7 @@ The full list lives in [.env.example](.env.example). Required vs optional:
 | `DEFAULT_RATE_LIMIT` | no | code: `20`; .env.example: `60` | Requests per minute |
 | `ALLOW_HTTP` | dev only | `false` | Set `true` to allow `http://` and localhost URLs |
 | `WS_PORT` | no | `8080` | ws-server port |
+| `WS_BIND_ADDR` | no | `127.0.0.1` | ws-server bind address. Default is loopback so a remote attacker cannot inject fake `_relay` events into connected dashboards. Set to `0.0.0.0` only on a trusted network if you need the dashboard reachable from another host. |
 | `MCP_SERVER_PORT` | no | `3000` | Reserved (MCP uses stdio, port unused) |
 | `PORT_WEATHER_API` | no | `4001` | Crypto Price Oracle port |
 | `PORT_NEWS_API` | no | `4002` | News Intelligence port |
@@ -383,12 +384,12 @@ The full list lives in [.env.example](.env.example). Required vs optional:
 | 4 | Soroban RPC unreachable on `check_policy` | Fail-closed, return `rpc_unavailable` | `src/policy-client.ts:202` |
 | 5 | RPC timeout on `record_spend` | Retry 3x with 1s/2s/4s backoff | `src/policy-client.ts:169` |
 | 6 | HEAD probe timeout | 5s timeout, retry once | `src/protocol-detector.ts:14` |
-| 7 | SSRF via URL | Block file://, private IPs, localhost unless `ALLOW_HTTP` | `src/security.ts:38` |
+| 7 | SSRF via URL | Block file://, IPv4 RFC1918 + 169.254/16 + 127/8, IPv6 loopback / link-local fe80::/10 / unique-local fc00::/7 / multicast ff00::/8 / IPv4-mapped `[::ffff:127.0.0.1]`, exotic IPv4 encodings (octal, decimal, hex). Localhost allowed only when `ALLOW_HTTP=true`. | `src/security.ts:117` (validateUrl) |
 | 8 | Prompt injection spend ("send to GATTACKER") | On-chain allowlist enforced by `check_policy` | `contracts/wallet-policy/src/lib.rs:158` |
-| 9 | Duplicate `record_spend` from RPC retry | Nonce stored on-chain, contract panics on duplicate | `contracts/wallet-policy/src/lib.rs:197` |
+| 9 | Duplicate `record_spend` from RPC retry | Nonce stored on-chain, contract panics on duplicate. invokeWithRetry threads the prepared TX hash through every error and recovers it on a retry-duplicate so a network blip never double-records. | `contracts/wallet-policy/src/lib.rs:206`, `src/policy-client.ts:241` |
 | 10 | Spam registrations | $0.01 USDC deposit collected via SAC transfer | `contracts/trust-registry/src/lib.rs:112` |
-| 11 | Service crashed without deregister | TTL counts down (60 ledgers initial, 180 after heartbeat); entry auto-expires | `contracts/trust-registry/src/lib.rs:240` |
-| 12 | Crashed deposit recovery | `reclaim_deposit(service_id, owner)` after TTL expires | `contracts/trust-registry/src/lib.rs:487` |
+| 11 | Service crashed without deregister | TTL counts down (60 ledgers initial, 180 after heartbeat); entry auto-expires | `contracts/trust-registry/src/lib.rs:249` |
+| 12 | Crashed deposit recovery | `reclaim_deposit(service_id, owner)` after TTL expires; heartbeat refreshes Deposit TTL while service is alive | `contracts/trust-registry/src/lib.rs:513`, `lib.rs:270` |
 | 13 | Duplicate URL within capability | Rejected with panic at register | `contracts/trust-registry/src/lib.rs:142` |
 | 14 | Restart within TTL window | `shared.ts:resolveServiceId` lists first, reuses existing ID, resumes heartbeat | `data-sources/src/shared.ts:227` |
 | 15 | HEAD returns 200 but GET returns 402 | `autopay.ts:classifyFreeAs402` re-detects from response headers | `src/autopay.ts:283` |
@@ -401,6 +402,12 @@ The full list lives in [.env.example](.env.example). Required vs optional:
 | 22 | Bazaar discovery tier down | Try/catch around `bazaarClient.extensions.discovery.listResources` | `src/discovery.ts:170` |
 | 23 | Trust-registry RPC down during discovery | Try/catch around `registryClient.listServices` | `src/discovery.ts:177` |
 | 24 | Client disconnects during long LLM call | `req.on("close")` flag + `req.socket.destroyed` check before `res.json` | `data-sources/src/analyst-api.ts:307` |
+| 25 | Wallet-policy persistent storage TTL expiry | `record_spend` extends TTL on Spend(day_key), Nonce, TotalSpent, TxCount on every write. Without this the daily counter would reset after ~5.7h on testnet. | `contracts/wallet-policy/src/lib.rs:212` |
+| 26 | Hostile 402 header CPU burn | `MAX_PAYMENT_HEADER_LENGTH = 8192` cap on x402 v2 base64 and MPP `request="..."` blobs | `src/protocol-detector.ts:117` |
+| 27 | Hostile price string DoS | `MAX_PRICE_STRING_LENGTH = 64` cap in `parsePriceStroops` | `src/security.ts:172` |
+| 28 | ws-server fake event injection | Bind defaults to 127.0.0.1; relay handler tags peers via `loopbackPeers` and rejects `_relay` from non-loopback connections. Override via `WS_BIND_ADDR=0.0.0.0` for trusted networks. | `src/ws-server.ts:27`, `src/ws-server.ts:74` |
+| 29 | `.env` file world-readable | `setup-service-wallets.ts` calls `chmodSync(ENV_PATH, 0o600)` after every write; warns if chmod fails | `scripts/setup-service-wallets.ts:255` |
+| 30 | `handleSetPolicy` negative-value lockout | Local validation rejects negative `daily_limit_stroops`, `per_tx_limit_stroops`, and non-integer / out-of-range `rate_limit` before signing the TX | `mcp-server/src/index.ts:471` |
 
 ## What makes this different
 

@@ -148,7 +148,7 @@ A capability lasts for the lifetime of the store once it enters the Set. None of
 ## Directory layout
 
 ```
-contract-explorer/src/        7001 lines, 48 files
+contract-explorer/src/        7199 lines, 48 files
   app.tsx                       66   shell, orchestrator init
   main.tsx                      13   React root
   vite-env.d.ts                  1

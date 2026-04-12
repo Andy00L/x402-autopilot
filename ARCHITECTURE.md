@@ -14,23 +14,23 @@ flowchart TD
         DASH["contract-explorer<br/>:5180 React Flow"]
     end
 
-    subgraph MCP["mcp-server (621 lines)"]
+    subgraph MCP["mcp-server (670 lines)"]
         MCPS["index.ts<br/>6 tools, stdio transport"]
     end
 
-    subgraph Core["Core engine (12 modules, 1967 lines)"]
-        AP["autopay.ts (333)<br/>orchestrator"]
-        SEC["security.ts (107)<br/>SSRF + price parser"]
-        MX["mutex.ts (41)<br/>sequential lock"]
-        PD["protocol-detector.ts (201)<br/>HEAD probe"]
-        PC["policy-client.ts (316)<br/>Soroban RPC writer"]
-        RC["registry-client.ts (120)<br/>Soroban RPC reader"]
-        BT["budget-tracker.ts (88)<br/>BigInt cache"]
+    subgraph Core["Core engine (12 modules, 2215 lines)"]
+        PC["policy-client.ts (402)<br/>Soroban writer + hash recovery"]
+        AP["autopay.ts (352)<br/>orchestrator"]
+        WS["ws-server.ts (246)<br/>:8080 loopback only"]
         DC["discovery.ts (231)<br/>3-tier pipeline"]
-        EB["event-bus.ts (65)<br/>WebSocket broadcast"]
-        WS["ws-server.ts (197)<br/>:8080, polls Soroban"]
-        CFG["config.ts (132)<br/>env + x402/mppx clients"]
+        PD["protocol-detector.ts (207)<br/>HEAD probe + 8 KB cap"]
+        SEC["security.ts (195)<br/>IPv6 SSRF + price parser"]
+        RC["registry-client.ts (158)<br/>Soroban reader"]
+        CFG["config.ts (139)<br/>env + x402/mppx clients"]
         TY["types.ts (136)<br/>6 error classes"]
+        BT["budget-tracker.ts (88)<br/>BigInt cache"]
+        EB["event-bus.ts (71)<br/>WebSocket broadcast"]
+        MX["mutex.ts (41)<br/>sequential lock"]
     end
 
     subgraph Sources["data-sources (5 files, 2413 lines)"]
@@ -49,8 +49,8 @@ flowchart TD
     end
 
     subgraph Stellar["Stellar Testnet"]
-        WP["wallet-policy<br/>8 fn, 353 lines"]
-        TR["trust-registry v3<br/>10 fn, 535 lines"]
+        WP["wallet-policy<br/>8 fn, 379 lines"]
+        TR["trust-registry v3<br/>10 fn, 561 lines"]
         USDC["USDC SAC"]
     end
 
@@ -359,9 +359,11 @@ stateDiagram-v2
 
 The `day_key` is `env.ledger().timestamp() / 86400`, so a new UTC day starts a fresh `SpendRec`. The `min_count` field tracks the rate-limit window: a request is rejected if `current_min == record.last_min && record.min_count >= policy.rate_limit`.
 
+**Persistent TTL.** `record_spend` calls `extend_ttl(50_000, 100_000)` on every persistent key it touches: `Spend(day_key)`, `Nonce(symbol)`, `TotalSpent`, and `TxCount`. Without these explicit extensions, persistent storage on testnet defaults to ~4096 ledgers (~5.7 hours). The daily counter would silently reset mid-day after a quiet period and the owner could overspend the daily limit. Lifetime totals would also expire and reset to zero. The TTL extension ensures every key lives for at least the next ~5.7 days.
+
 ## Trust registry contract (v3)
 
-`contracts/trust-registry/src/lib.rs` (535 lines, 10 public functions).
+`contracts/trust-registry/src/lib.rs` (561 lines, 10 public functions).
 
 | Function | Type | Purpose | Auth |
 |----------|------|---------|------|
@@ -488,33 +490,34 @@ See [contract-explorer/README.md](contract-explorer/README.md) for the full dire
 
 ```
 contracts/
-  wallet-policy/src/lib.rs          353 lines, 8 pub fn
-  trust-registry/src/lib.rs         535 lines, 10 pub fn  (v3)
+  wallet-policy/src/lib.rs          379 lines, 8 pub fn  (TTL extends in record_spend)
+  trust-registry/src/lib.rs         561 lines, 10 pub fn (v3)
 
-src/                                1996 lines total
-  autopay.ts                        333  payment orchestrator
-  policy-client.ts                  316  Soroban writer for wallet-policy
+src/                                2215 lines total
+  policy-client.ts                  402  Soroban writer + hash-recovery retry
+  autopay.ts                        352  payment orchestrator
+  ws-server.ts                      246  loopback bind, MCP relay, 5s Soroban poll
   discovery.ts                      231  3-tier discovery pipeline
-  protocol-detector.ts              201  HEAD probe + 402 header parsing
-  ws-server.ts                      197  WebSocket server, 5s Soroban poll, MCP relay
-  registry-client.ts                149  Soroban reader (listServices + listCapabilities)
+  protocol-detector.ts              207  HEAD probe + 402 header parsing + 8KB cap
+  security.ts                       195  SSRF (IPv6 + IPv4-mapped) + parsePriceStroops
+  registry-client.ts                158  Soroban reader (listServices + listCapabilities)
+  config.ts                         139  env validation, x402 + mppx clients
   types.ts                          136  6 error classes + interfaces
-  config.ts                         132  env validation, x402 + mppx clients
-  security.ts                       107  SSRF prevention + parsePriceStroops
   budget-tracker.ts                  88  BigInt local cache
-  event-bus.ts                       65  WebSocket broadcast + bigint serializer
+  event-bus.ts                       71  WebSocket broadcast + bigint serializer
   mutex.ts                           41  sequential payment lock
 
-data-sources/src/                   2413 lines total
+data-sources/src/                   2418 lines total
   stellar-data-api.ts               620  MPP stellar-stats + x402 market-report + monitor
-  analyst-api.ts                    544  x402 analyze, agent-to-agent + LLM
+  analyst-api.ts                    549  x402 analyze, agent-to-agent + LLM
   shared.ts                         532  x402 server, registration, heartbeat
   news-api.ts                       502  x402 news + briefing + LLM
   weather-api.ts                    215  x402 prices, CoinGecko upstream
 
 mcp-server/src/
-  index.ts                          642  6 tools, stdio transport, ws relay,
-                                          dynamic capability discovery
+  index.ts                          670  6 tools, stdio transport, ws relay,
+                                          dynamic capability discovery,
+                                          set_policy input validation
 
 contract-explorer/src/              7199 lines total, 48 files
   stores/  (10 files)              3056  Zustand stores
@@ -560,8 +563,8 @@ contract-explorer/src/              7199 lines total, 48 files
     constants.ts                     99
   app.tsx + main.tsx + vite-env.d    80
 
-scripts/                            1584 TS lines + 2 bash files
-  setup-service-wallets.ts          534  generate, fund, trustline, USDC, allowlist
+scripts/                            1598 TS lines + 2 bash files
+  setup-service-wallets.ts          548  generate, fund, trustline, USDC, allowlist, chmod 600
   cli-dashboard.ts                  472  ANSI terminal dashboard
   ensure-service-wallets.ts         149  predev fast-path
   seed-registry.ts                  121  manual capability registration
@@ -580,10 +583,19 @@ scripts/                            1584 TS lines + 2 bash files
 | Overspend via prompt injection | On-chain `check_policy` enforces per-tx, daily, rate, and allowlist limits | `contracts/wallet-policy/src/lib.rs:99` |
 | Concurrent budget race | 30s async mutex, one payment in flight at a time | `src/mutex.ts` |
 | Soroban RPC down | Fail-closed: `checkPolicy` returns `{allowed:false, reason:"rpc_unavailable"}` | `src/policy-client.ts:202` |
-| Replay attack | Nonce stored on-chain, contract panics on duplicate | `contracts/wallet-policy/src/lib.rs:197` |
+| Replay attack | Nonce stored on-chain, contract panics on duplicate. Persistent TTL extended on every record_spend so the nonce set never ages out mid-day. | `contracts/wallet-policy/src/lib.rs:206` |
+| Daily total reset (TTL) | record_spend extends Spend(day_key) TTL on every write. Without this the daily counter would expire after ~5.7h on testnet. | `contracts/wallet-policy/src/lib.rs:240` |
+| Double-record from retry blip | invokeWithRetry threads `(hash: <hex>)` through every error and treats a "duplicate" panic on a retry as proof the prior attempt landed. Final getTransaction fallback covers the all-network-failed case. | `src/policy-client.ts:137` (hash compute), `src/policy-client.ts:241` (duplicate recovery), `src/policy-client.ts:265` (final fallback) |
 | Registry spam | $0.01 USDC deposit collected via SAC transfer | `contracts/trust-registry/src/lib.rs:112` |
-| Fake quality reports | Max 1 report per reporter per service per day, key includes day_key | `contracts/trust-registry/src/lib.rs:455` |
-| Capability index DoS | `CapName(u32)` paginated persistent keys (NOT a `Vec` in instance storage). Instance entry adds 4 bytes total. | `contracts/trust-registry/src/lib.rs:405` |
+| Deposit lockup after long uptime | heartbeat extends Deposit(id) TTL on every call so reclaim_deposit stays available | `contracts/trust-registry/src/lib.rs:270` |
+| CapIndex aging in steady-state | heartbeat ALWAYS extends CapIndex TTL (not only on cleanup writes) | `contracts/trust-registry/src/lib.rs:301` |
+| Fake quality reports | Max 1 report per reporter per service per day, key includes day_key | `contracts/trust-registry/src/lib.rs:481` |
+| Capability index DoS | `CapName(u32)` paginated persistent keys (NOT a `Vec` in instance storage). Instance entry adds 4 bytes total. | `contracts/trust-registry/src/lib.rs:431` |
+| ws-server fake event injection | Bind defaults to 127.0.0.1; relay handler tags peers via `loopbackPeers` and rejects `_relay` from non-loopback connections. Override via `WS_BIND_ADDR` for trusted networks. | `src/ws-server.ts:27`, `src/ws-server.ts:74` |
+| `.env` world-readable | `setup-service-wallets.ts` calls `chmodSync(ENV_PATH, 0o600)` after every write | `scripts/setup-service-wallets.ts:255` |
+| Hostile 402 header CPU burn | `MAX_PAYMENT_HEADER_LENGTH = 8192` cap on x402 v2 base64 and MPP request blobs | `src/protocol-detector.ts:117` |
+| Hostile price string DoS | `MAX_PRICE_STRING_LENGTH = 64` cap in `parsePriceStroops` | `src/security.ts:172` |
+| Negative-value policy lockout | `handleSetPolicy` validates non-negative integer inputs before signing | `mcp-server/src/index.ts:471` |
 | Secret exposure in errors | `maskKey()` for Stellar keys, `Bearer ***` for API keys, regex strip in `mcp-server/src/index.ts:fail` | `src/config.ts:29`, `mcp-server/src/index.ts:138` |
 | Response body consumed twice | Single `.text()` then `JSON.parse` separately | `src/autopay.ts:138` |
 | HEAD 200 but GET 402 | `classifyFreeAs402` re-detects from response and falls through to payment | `src/autopay.ts:283` |
