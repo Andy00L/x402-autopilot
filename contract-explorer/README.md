@@ -121,8 +121,8 @@ Defaults are in `src/lib/constants.ts`. Override via URL search params:
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `policy` | `CDZSYMEBO7EB3SA2DE3APMRH3MUCZIVE2RWFGSYMPHVQRJYCYT4EO6RG` | Wallet-policy contract ID |
-| `registry` | `CBL2TCD7GLHLPLH4GXQO5L6DR3XACQ7WS3S3FHI2L2F7JO2WZCZTEDSP` | Trust-registry contract ID |
+| `policy` | `CDUQ4RY3SIRQ7AX5HI2TMTBC527RZ54DS54GVXVDH54O2RQH7NPRH7MM` | Wallet-policy contract ID |
+| `registry` | `CBMZL7YHPV2UFDK7S7OQOE46TAPULOMKRK7W2OZONP3ZUXUA3S6RMRAJ` | Trust-registry contract ID |
 | `rpc` | `https://soroban-testnet.stellar.org` | Soroban RPC URL |
 
 The wallet list is persisted to `localStorage` under `x402-autopilot.wallets.v1`. Two default wallets are seeded (`Main wallet` and `Analyst agent`); add more via the header input field.

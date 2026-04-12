@@ -70,8 +70,13 @@ function callClaudeHeadless(prompt: string): Promise<string> {
       {
         stdio: ["pipe", "pipe", "pipe"],
         timeout: CLAUDE_P_TIMEOUT_MS,
-        // Inherit env (including PATH and OAuth keychain access).
-        // Do NOT inject ANTHROPIC_API_KEY — let OAuth handle auth.
+        // Default env inheritance: PATH and OAuth keychain access pass
+        // through. ANTHROPIC_API_KEY (if set in this process) ALSO passes
+        // through to the child — that is intentional. claude -p prefers
+        // the OAuth subscription when both are available, so the API key
+        // is only used as a fallback inside the subprocess. We do NOT
+        // explicitly delete it because the unified-claude binary handles
+        // the precedence correctly on its own.
       },
     );
 

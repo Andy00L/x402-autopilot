@@ -39,8 +39,14 @@ export class EventBus {
     );
 
     for (const client of this.clients) {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      try {
         client.send(message);
+      } catch {
+        // The socket may transition to closing between the readyState
+        // check and the actual send (especially under load). Don't let
+        // a single broken peer interrupt delivery to the rest of the
+        // client set, and don't propagate the error to event emitters.
       }
     }
   }

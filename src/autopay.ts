@@ -82,8 +82,13 @@ export async function autopilotFetch(
         try { data = JSON.parse(text); } catch { data = text; }
         return { data, costStroops: 0n, protocol: "free" };
       }
-      // 402 on GET — re-classify using the response headers
+      // 402 on GET — re-classify using the response headers. Drain the
+      // body explicitly to release the underlying socket back to the
+      // connection pool; we're about to make a fresh request through
+      // x402Fetch / mppFetch and don't want a half-consumed Response
+      // hanging on a leased connection.
       const reclassified = classifyFreeAs402(freeResponse);
+      try { await freeResponse.text(); } catch { /* draining is best-effort */ }
       protocol = reclassified.protocol;
       if (reclassified.priceRaw) {
         priceStroops = parsePriceStroops(reclassified.priceRaw);
@@ -184,18 +189,32 @@ export async function autopilotFetch(
     // ---------------------------------------------------------------------------
 
     if (txHash && priceStroops > 0n) {
-      // Payment was settled but something went wrong after — money is gone, MUST record
+      // Payment was settled but something went wrong after — money is gone, MUST record.
+      //
+      // Reaching this branch means policyClient.recordSpend in the try
+      // block ran out of retries (or a non-recoverable error like a hard
+      // RPC rejection threw before the contract layer could observe a
+      // landed TX). The retry layer in policy-client.ts now uses
+      // pendingHash recovery, so the "first attempt actually landed but
+      // we lost the ack" case is already returned as success by
+      // recordSpend itself — we will NOT reach this catch in that case.
+      //
+      // Therefore, when we DO reach this catch, the on-chain contract
+      // genuinely has no record of the spend. A fresh "e..." nonce is
+      // safe (it cannot collide with a successful prior attempt) and
+      // gives the contract one last chance to record the spend.
       try {
-        const nonce = `e${Date.now().toString(36)}_${txHash.slice(0, 16)}`.slice(0, 32);
+        const recoveryNonce = `e${Date.now().toString(36)}_${txHash.slice(0, 16)}`.slice(0, 32);
         await policyClient.recordSpend(
-          nonce,
+          recoveryNonce,
           priceStroops,
           recipient ?? config.stellarPublicKey,
           txHash,
         );
         budgetTracker.recordLocal(priceStroops);
       } catch {
-        // Last resort: local record only
+        // Last resort: local record only. The next budgetTracker
+        // syncFromSoroban will reconcile against on-chain truth.
         budgetTracker.recordLocal(priceStroops);
       }
 

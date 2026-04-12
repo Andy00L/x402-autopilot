@@ -467,16 +467,44 @@ async function handleSetPolicy(
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   try {
-    const dailyLimit =
-      typeof args.daily_limit_stroops === "string"
-        ? BigInt(args.daily_limit_stroops)
-        : undefined;
-    const perTxLimit =
-      typeof args.per_tx_limit_stroops === "string"
-        ? BigInt(args.per_tx_limit_stroops)
-        : undefined;
-    const rateLimit =
-      typeof args.rate_limit === "number" ? args.rate_limit : undefined;
+    // Validate every supplied field BEFORE building the contract call.
+    // The contract takes i128 / u32, but it does not check for negative
+    // limits or non-integer rate limits. A user passing -1 here would
+    // succeed at the contract layer but lock themselves out of every
+    // future payment (negative per-tx limit makes any positive amount
+    // exceed it). Reject these locally with an actionable error so the
+    // owner sees the problem before signing the TX.
+    let dailyLimit: bigint | undefined;
+    if (typeof args.daily_limit_stroops === "string") {
+      try {
+        dailyLimit = BigInt(args.daily_limit_stroops);
+      } catch {
+        return fail(new Error("daily_limit_stroops must be a base-10 integer string"));
+      }
+      if (dailyLimit < 0n) {
+        return fail(new Error("daily_limit_stroops must be non-negative"));
+      }
+    }
+
+    let perTxLimit: bigint | undefined;
+    if (typeof args.per_tx_limit_stroops === "string") {
+      try {
+        perTxLimit = BigInt(args.per_tx_limit_stroops);
+      } catch {
+        return fail(new Error("per_tx_limit_stroops must be a base-10 integer string"));
+      }
+      if (perTxLimit < 0n) {
+        return fail(new Error("per_tx_limit_stroops must be non-negative"));
+      }
+    }
+
+    let rateLimit: number | undefined;
+    if (typeof args.rate_limit === "number") {
+      if (!Number.isInteger(args.rate_limit) || args.rate_limit < 0 || args.rate_limit > 0xffffffff) {
+        return fail(new Error("rate_limit must be a non-negative integer that fits in u32"));
+      }
+      rateLimit = args.rate_limit;
+    }
 
     // Fetch current budget to get defaults for omitted fields
     const currentBudget = budgetTracker.getBudget();

@@ -21,8 +21,15 @@ function requireEnv(name: string): string {
   return value;
 }
 
+/**
+ * Read an optional env var, returning `fallback` only when the variable is
+ * UNSET. An explicit empty string is treated as the user's deliberate
+ * choice and is preserved (not silently replaced by the default). Use
+ * `||` semantics inline at the call site if you want empty-as-fallback.
+ */
 function optionalEnv(name: string, fallback: string): string {
-  return process.env[name] || fallback;
+  const value = process.env[name];
+  return value === undefined ? fallback : value;
 }
 
 /** Mask a Stellar key for safe logging: "G...{last4}" */

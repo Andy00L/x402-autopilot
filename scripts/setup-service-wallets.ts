@@ -36,7 +36,7 @@ import {
   Address,
   scValToNative,
 } from "@stellar/stellar-sdk";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
@@ -245,7 +245,21 @@ function updateEnvFile(wallets: ServiceWalletSpec[]): void {
     content = upsertEnvVar(content, w.envSecretKey, w.keypair.secret());
   }
   writeFileSync(ENV_PATH, content);
-  console.log(`.env updated at ${ENV_PATH}`);
+  // Tighten the .env file permissions to owner read/write only.
+  // The file contains four Stellar secret keys (main + 3 service wallets);
+  // a world-readable .env (the OS default of 0644) leaks them to every
+  // local user. chmodSync is idempotent and cheap; running it on every
+  // .env update guarantees a safe state even if the file was previously
+  // created with weaker perms.
+  try {
+    chmodSync(ENV_PATH, 0o600);
+  } catch (err) {
+    console.warn(
+      `  WARNING: could not chmod 600 ${ENV_PATH}: ${err instanceof Error ? err.message : "unknown"}. ` +
+        `Run \`chmod 600 ${ENV_PATH}\` manually to keep secret keys private.`,
+    );
+  }
+  console.log(`.env updated at ${ENV_PATH} (mode 0600)`);
 }
 
 // ---------------------------------------------------------------------------

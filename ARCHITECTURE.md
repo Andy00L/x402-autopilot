@@ -474,8 +474,8 @@ flowchart TD
 
 | Param | Default | Purpose |
 |-------|---------|---------|
-| `policy` | `CDZSYMEBO7EB3SA2DE3APMRH3MUCZIVE2RWFGSYMPHVQRJYCYT4EO6RG` | wallet-policy contract ID |
-| `registry` | `CBL2TCD7GLHLPLH4GXQO5L6DR3XACQ7WS3S3FHI2L2F7JO2WZCZTEDSP` | trust-registry contract ID |
+| `policy` | `CDUQ4RY3SIRQ7AX5HI2TMTBC527RZ54DS54GVXVDH54O2RQH7NPRH7MM` | wallet-policy contract ID |
+| `registry` | `CBMZL7YHPV2UFDK7S7OQOE46TAPULOMKRK7W2OZONP3ZUXUA3S6RMRAJ` | trust-registry contract ID |
 | `rpc` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint |
 
 The wallet list is persisted to `localStorage` under `x402-autopilot.wallets.v1`. Add wallets via the header input field; the address bar URL is the only other source of truth.

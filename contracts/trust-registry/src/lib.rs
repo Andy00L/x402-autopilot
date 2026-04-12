@@ -209,6 +209,15 @@ impl TrustRegistry {
                 .get::<DataKey, Symbol>(&DataKey::CapName(i))
             {
                 if name == capability {
+                    // Refresh TTL on the matched entry. Without this, a
+                    // capability whose only registered services keep
+                    // re-registering (rather than calling list_capabilities)
+                    // would never refresh its CapName TTL and the entry
+                    // could eventually expire, leaving a hole in the
+                    // CapCount-bounded index.
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&DataKey::CapName(i), 50_000, 100_000);
                     already_tracked = true;
                     break;
                 }
@@ -251,6 +260,17 @@ impl TrustRegistry {
             .temporary()
             .extend_ttl(&DataKey::Service(service_id), 180, 180);
 
+        // Refresh the deposit record's TTL on every heartbeat. Without this
+        // a service that runs longer than the original deposit TTL
+        // (~5.7 days at the 100_000 ledger setting) loses its deposit
+        // record entirely. After expiry, reclaim_deposit fails with
+        // "no deposit found" and the $0.01 stays locked in the contract
+        // forever. As long as the service heartbeats, the deposit must
+        // remain reclaimable.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Deposit(service_id), 100_000, 100_000);
+
         // Clean dead entries from this capability's index
         let cap_key = DataKey::CapIndex(info.capability.clone());
         let cap_ids: Vec<u32> = env
@@ -266,13 +286,19 @@ impl TrustRegistry {
             }
         }
 
-        // Only write back if dead entries were actually removed
+        // Only rewrite the index if dead entries were actually removed
+        // (avoids a needless persistent write on every heartbeat).
         if clean_ids.len() != cap_ids.len() {
             env.storage().persistent().set(&cap_key, &clean_ids);
-            env.storage()
-                .persistent()
-                .extend_ttl(&cap_key, 100_000, 100_000);
         }
+        // ALWAYS extend the CapIndex TTL on heartbeat. Earlier code only
+        // refreshed it on cleanup writes, so a steady-state with no dead
+        // entries left CapIndex unrefreshed and it could expire even
+        // while live services kept heartbeating. After expiry,
+        // list_services would return an empty Vec for that capability.
+        env.storage()
+            .persistent()
+            .extend_ttl(&cap_key, 100_000, 100_000);
     }
 
     /// Deregister a service. Removes from temporary + CapIndex. Refunds deposit.

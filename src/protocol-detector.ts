@@ -105,9 +105,19 @@ function classifyResponse(response: Response): DetectResult {
 //     "asset": "CBIELTK6..."
 //   }]
 // }
+//
+// Defensive cap on the encoded length: Node's default HTTP header size
+// limit is 16 KB total, but a single response header CAN approach that.
+// A 16 KB base64 blob decodes to ~12 KB of JSON, which JSON.parse can
+// chew through quickly enough but a hostile server could still craft a
+// nested object/array bomb that costs disproportionate CPU. We therefore
+// reject anything over MAX_PAYMENT_HEADER_LENGTH outright.
 // ---------------------------------------------------------------------------
 
+const MAX_PAYMENT_HEADER_LENGTH = 8192; // 8 KB encoded base64
+
 function parseX402V2Header(base64: string): { price?: string; payTo?: string } {
+  if (base64.length === 0 || base64.length > MAX_PAYMENT_HEADER_LENGTH) return {};
   try {
     const json = Buffer.from(base64, "base64").toString("utf-8");
     const parsed: unknown = JSON.parse(json);
@@ -162,39 +172,35 @@ function extractLegacyX402Recipient(raw: string): string | undefined {
 // MPP header parsing
 // ---------------------------------------------------------------------------
 
-function extractMppPrice(wwwAuth: string): string | undefined {
-  // Amount is inside the base64url-encoded "request" parameter
+function decodeMppRequestParam(wwwAuth: string): Record<string, unknown> | null {
   const requestMatch = /request="([^"]+)"/.exec(wwwAuth);
-  if (requestMatch) {
-    try {
-      const json = Buffer.from(requestMatch[1], "base64url").toString("utf-8");
-      const parsed: unknown = JSON.parse(json);
-      if (typeof parsed === "object" && parsed !== null) {
-        const obj = parsed as Record<string, unknown>;
-        if (typeof obj.amount === "string") return obj.amount;
-      }
-    } catch { /* ignore decode failure */ }
+  if (!requestMatch) return null;
+  const encoded = requestMatch[1]!;
+  // Same defensive cap as parseX402V2Header. The MPP request param is
+  // base64url-encoded JSON; an unbounded blob in a 402 header is a CPU
+  // burn vector even though Node's HTTP header size limit caps it.
+  if (encoded.length === 0 || encoded.length > MAX_PAYMENT_HEADER_LENGTH) return null;
+  try {
+    const json = Buffer.from(encoded, "base64url").toString("utf-8");
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
   }
+}
+
+function extractMppPrice(wwwAuth: string): string | undefined {
+  const obj = decodeMppRequestParam(wwwAuth);
+  if (obj && typeof obj.amount === "string") return obj.amount;
   // Fallback: try amount="..." directly in the header
   const match = /amount="([^"]+)"/.exec(wwwAuth);
   return match?.[1];
 }
 
 function extractMppRecipient(wwwAuth: string): string | undefined {
-  // MPP uses 'recipient' in the base64url request param, but also may
-  // have 'address' directly. Check the decoded request param first.
-  const requestMatch = /request="([^"]+)"/.exec(wwwAuth);
-  if (requestMatch) {
-    try {
-      const json = Buffer.from(requestMatch[1], "base64url").toString("utf-8");
-      const parsed: unknown = JSON.parse(json);
-      if (typeof parsed === "object" && parsed !== null) {
-        const obj = parsed as Record<string, unknown>;
-        if (typeof obj.recipient === "string") return obj.recipient;
-      }
-    } catch { /* ignore decode failure */ }
-  }
-
+  const obj = decodeMppRequestParam(wwwAuth);
+  if (obj && typeof obj.recipient === "string") return obj.recipient;
   // Fallback: try address="..." directly in the header
   const addrMatch = /address="([^"]+)"/.exec(wwwAuth);
   return addrMatch?.[1];

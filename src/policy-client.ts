@@ -63,8 +63,20 @@ async function simulateContract(
     throw new SorobanError(functionName, simResult.error);
   }
 
+  // Soroban returns a "restore" branch when one of the contract's
+  // persistent storage entries has aged out and the simulator can no
+  // longer read it without an explicit RestoreFootprint operation.
+  // Surface this distinctly so the caller can see "your contract data
+  // expired" instead of a generic "simulation failed".
+  if (rpc.Api.isSimulationRestore(simResult)) {
+    throw new SorobanError(
+      functionName,
+      "state_restore_required: contract storage entries have expired and need a RestoreFootprint operation before the call will succeed",
+    );
+  }
+
   if (!rpc.Api.isSimulationSuccess(simResult)) {
-    throw new SorobanError(functionName, "simulation requires state restore");
+    throw new SorobanError(functionName, "simulation returned unexpected status");
   }
 
   const retval = simResult.result?.retval;
@@ -114,25 +126,38 @@ async function invokeContract(
 
   prepared.sign(keypair);
 
+  // Compute the TX hash from the signed envelope BEFORE sending. The hash
+  // is deterministic from the signed content, so this matches whatever
+  // hash the network will use. Embedding it in every error message lets
+  // invokeWithRetry recover the prior attempt's hash on a "duplicate"
+  // panic in a subsequent attempt — the duplicate is proof that the prior
+  // attempt actually landed on-chain, and the recovered hash is its
+  // confirmation receipt. Without this, retry-after-network-blip would
+  // double-record spends with a fresh nonce in the autopay catch path.
+  const txHashHex = prepared.hash().toString("hex");
+
   let sendResult;
   try {
     sendResult = await server.sendTransaction(prepared);
   } catch (err) {
     throw new NetworkError(
       "soroban_rpc",
-      `sendTransaction(${functionName}) failed: ${err instanceof Error ? err.message : "unknown"}`,
+      `sendTransaction(${functionName}) failed: ${err instanceof Error ? err.message : "unknown"} (hash: ${txHashHex})`,
     );
   }
 
   if (sendResult.status === "ERROR") {
     throw new SorobanError(
       functionName,
-      `TX rejected: ${sendResult.errorResult?.toXDR("base64") ?? "unknown error"}`,
+      `TX rejected: ${sendResult.errorResult?.toXDR("base64") ?? "unknown error"} (hash: ${txHashHex})`,
     );
   }
 
   if (sendResult.status === "DUPLICATE") {
-    throw new SorobanError(functionName, "TX duplicate — possible nonce reuse");
+    throw new SorobanError(
+      functionName,
+      `TX duplicate — possible nonce reuse (hash: ${txHashHex})`,
+    );
   }
 
   // Poll for confirmation (up to 15s)
@@ -151,7 +176,7 @@ async function invokeContract(
 
     throw new SorobanError(
       functionName,
-      `TX failed on-chain with status: ${getResult.status}`,
+      `TX failed on-chain with status: ${getResult.status} (hash: ${txHashHex})`,
     );
   }
 
@@ -164,7 +189,25 @@ async function invokeContract(
 // ---------------------------------------------------------------------------
 // Retry wrapper for write operations
 // Exponential backoff: 1s, 2s, 4s — per CLAUDE.md Rule 6
+//
+// Idempotency recovery
+// --------------------
+// Soroban writes are idempotent at the contract level via nonce dedup,
+// but the JSON-RPC submission path is not: the network may swallow the
+// ack while the TX still lands. Without compensation, the next retry
+// resubmits with the same nonce, the contract panics "duplicate", and
+// the caller's catch path resorts to a fresh nonce — double-recording
+// the same spend.
+//
+// The fix: every error from invokeContract carries the deterministic
+// `(hash: <hex>)` of the signed envelope. We capture it as `pendingHash`.
+// On a subsequent attempt that fails with "duplicate", we KNOW the
+// previous attempt landed (the contract has the nonce it would only
+// have if our prior submission committed), so we return `pendingHash`
+// as the success result and let the caller continue the happy path.
 // ---------------------------------------------------------------------------
+
+const HASH_RE = /hash:\s*([a-f0-9]{64})/i;
 
 async function invokeWithRetry(
   functionName: string,
@@ -172,23 +215,66 @@ async function invokeWithRetry(
   maxRetries = 3,
 ): Promise<string> {
   let lastError: Error | undefined;
+  let pendingHash: string | undefined;
+
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await invokeContract(functionName, args);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      // Don't retry on duplicate nonce — it's a logic error
-      if (lastError.message.includes("duplicate")) throw lastError;
-      // Don't retry on policy denial
-      if (lastError.message.includes("denied") || lastError.message.includes("rejected")) {
+      const msg = lastError.message;
+
+      // Snapshot the hash from this attempt's error so a follow-up attempt
+      // can interpret a "duplicate" panic as confirmation of this one.
+      const hashMatch = HASH_RE.exec(msg);
+      if (hashMatch) {
+        pendingHash = hashMatch[1];
+      }
+
+      // Duplicate nonce. Two cases:
+      //   - First attempt: the caller passed a nonce that was already
+      //     recorded in a previous session. Hard logic error, surface it.
+      //   - Retry attempt: a prior attempt's TX actually landed (network
+      //     blip swallowed the ack). pendingHash holds that prior hash;
+      //     return it as success so the caller's happy path runs once.
+      if (msg.includes("duplicate")) {
+        if (pendingHash !== undefined) {
+          return pendingHash;
+        }
         throw lastError;
       }
+
+      // Don't retry on hard rejections or policy denials.
+      if (msg.includes("denied") || msg.includes("rejected")) {
+        throw lastError;
+      }
+
       if (attempt < maxRetries - 1) {
         await sleep(1_000 * Math.pow(2, attempt)); // 1s, 2s, 4s
       }
     }
   }
-  throw lastError!;
+
+  // All retries exhausted. Before surrendering to the caller, give the
+  // network one last chance to confirm the FIRST attempt's TX. The most
+  // common path here is "first attempt timed out polling, every retry
+  // ran into a separate network blip". If the first TX landed
+  // asynchronously, getTransaction will see it now and we can return
+  // pendingHash as success — the alternative is the caller (autopay
+  // catch) issues a fresh-nonce recordSpend and double-counts the spend.
+  if (pendingHash !== undefined) {
+    try {
+      const result = await server.getTransaction(pendingHash);
+      if (result.status === "SUCCESS") {
+        return pendingHash;
+      }
+    } catch {
+      // Final check itself failed — there's nothing left to do.
+      // Fall through to throwing the captured error.
+    }
+  }
+
+  throw lastError ?? new Error(`${functionName} failed without error`);
 }
 
 // ---------------------------------------------------------------------------

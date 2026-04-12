@@ -59,8 +59,17 @@ async function simulateContract(
     throw new SorobanError(functionName, simResult.error);
   }
 
+  // Distinct branch for "needs RestoreFootprint" so the caller knows
+  // the failure is recoverable by an admin (not a fundamental bug).
+  if (rpc.Api.isSimulationRestore(simResult)) {
+    throw new SorobanError(
+      functionName,
+      "state_restore_required: trust-registry storage entry has expired",
+    );
+  }
+
   if (!rpc.Api.isSimulationSuccess(simResult)) {
-    throw new SorobanError(functionName, "simulation requires state restore");
+    throw new SorobanError(functionName, "simulation returned unexpected status");
   }
 
   const retval = simResult.result?.retval;

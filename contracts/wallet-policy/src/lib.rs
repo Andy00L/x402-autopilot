@@ -193,11 +193,23 @@ impl WalletPolicy {
         owner.require_auth();
 
         // --- nonce dedup ---
+        //
+        // The nonce key is the only on-chain replay protection. Soroban
+        // persistent entries are NOT auto-extended by `set` or `get`, so
+        // without an explicit `extend_ttl` the entry would expire at the
+        // network minimum (~4096 ledgers / ~5.7 hours on testnet) after
+        // creation. Once expired, the same nonce becomes reusable and the
+        // owner could double-record an old payment after a restart.
+        // Extend to ~5.7 days so a daily reconciler has plenty of time
+        // to observe the record before it ages out.
         let nonce_key = DataKey::Nonce(nonce.clone());
         if env.storage().persistent().has(&nonce_key) {
             panic!("duplicate nonce");
         }
         env.storage().persistent().set(&nonce_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&nonce_key, 50_000, 100_000);
 
         // --- update daily spend ---
         let now = env.ledger().timestamp();
@@ -215,9 +227,17 @@ impl WalletPolicy {
             record.min_count = 1;
         }
 
+        // CRITICAL: extend TTL on the daily spend record. Without this the
+        // record expires after ~5.7 hours, the next payment loads an empty
+        // SpendRec, and the daily total resets mid-day. The owner could
+        // then exceed the daily limit. The TTL doesn't need to be huge
+        // (the day_key changes every 24h anyway) but it MUST outlast a
+        // long quiet period within the same day.
+        let spend_key = DataKey::Spend(day_key);
+        env.storage().persistent().set(&spend_key, &record);
         env.storage()
             .persistent()
-            .set(&DataKey::Spend(day_key), &record);
+            .extend_ttl(&spend_key, 50_000, 100_000);
 
         // --- update lifetime stats ---
         let total_spent: i128 = env
@@ -228,6 +248,9 @@ impl WalletPolicy {
         env.storage()
             .persistent()
             .set(&DataKey::TotalSpent, &(total_spent + amount));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::TotalSpent, 50_000, 100_000);
 
         let tx_count: u64 = env
             .storage()
@@ -237,6 +260,9 @@ impl WalletPolicy {
         env.storage()
             .persistent()
             .set(&DataKey::TxCount, &(tx_count + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::TxCount, 50_000, 100_000);
 
         // --- emit event ---
         env.events().publish(
