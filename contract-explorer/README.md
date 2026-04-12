@@ -1,10 +1,12 @@
 # Contract Explorer
 
+![Soroban](https://img.shields.io/badge/Soroban-SDK%2022-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6) ![React](https://img.shields.io/badge/React-19.2-61DAFB) ![x402](https://img.shields.io/badge/x402-Coinbase-purple) ![MPP](https://img.shields.io/badge/MPP-Stripe-635BFF) ![Stellar](https://img.shields.io/badge/Stellar-Testnet-00B4E6) ![MCP](https://img.shields.io/badge/MCP-Claude%20Desktop-orange) ![License: MIT](https://img.shields.io/badge/License-MIT-green)
+
 Real-time network graph dashboard for the x402 Autopilot system. Visualizes wallets, services, and Soroban contracts as an interactive React Flow canvas with animated payment flows.
 
 48 TypeScript/TSX source files, 7199 lines. Built on React 19, React Flow 12, Zustand 5, Tailwind CSS, and shadcn/ui (Radix primitives). Standalone Vite app, not part of the npm workspace.
 
-## Quick start
+## 🚀 Quick start
 
 ```bash
 # From the project root, the CLI dashboard launches it for you:
@@ -18,7 +20,7 @@ npm run dev          # Vite dev server on :5180
 
 Open `http://localhost:5180`. The dashboard auto-connects to Soroban RPC (`https://soroban-testnet.stellar.org`) and Horizon REST (`https://horizon-testnet.stellar.org`). If `ws-server` is running on `:8080`, it also connects for real-time spend events.
 
-## What it shows
+## 🔄 What it shows
 
 ```mermaid
 flowchart LR
@@ -45,7 +47,7 @@ flowchart LR
 - **Bullet edges** animate from sender to receiver on every USDC payment detected via Horizon payments, Soroban events, or the ws-server WebSocket. Sub-buy edges (an agent buying from another agent) render in gold.
 - **Activity feed** lists events chronologically: spends, registrations, heartbeats, denials, reclaims. Each row links to stellar.expert via the transaction hash.
 
-## Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
@@ -145,7 +147,7 @@ flowchart LR
 
 A capability lasts for the lifetime of the store once it enters the Set. None of the three sources prunes; the on-chain `CapName(u32)` index never shrinks.
 
-## Directory layout
+## 📂 Directory layout
 
 ```
 contract-explorer/src/        7199 lines, 48 files
@@ -206,7 +208,7 @@ contract-explorer/src/        7199 lines, 48 files
     constants.ts                 99  defaults, polling intervals, seed caps
 ```
 
-## Tech stack
+## 📦 Tech stack
 
 | Dependency | Version | Purpose |
 |-----------|---------|---------|
@@ -221,7 +223,7 @@ contract-explorer/src/        7199 lines, 48 files
 | vite | ^6.1.0 | Dev server + bundler |
 | typescript | ^5.7.3 | Type checking |
 
-## Limitations
+## ⚠️ Limitations
 
 - Soroban RPC polling is on a 15-second interval, so contract state can be up to 15 seconds stale. The ws-server WebSocket connection delivers `spend:ok` events instantly but only when the engine is running.
 - Horizon payment history is paged. Very active wallets may not show their full history; the store keeps the most recent page.

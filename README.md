@@ -1,12 +1,14 @@
 # x402 Autopilot
 
+![Soroban](https://img.shields.io/badge/Soroban-SDK%2022-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6) ![React](https://img.shields.io/badge/React-19.2-61DAFB) ![x402](https://img.shields.io/badge/x402-Coinbase-purple) ![MPP](https://img.shields.io/badge/MPP-Stripe-635BFF) ![Stellar](https://img.shields.io/badge/Stellar-Testnet-00B4E6) ![MCP](https://img.shields.io/badge/MCP-Claude%20Desktop-orange) ![License: MIT](https://img.shields.io/badge/License-MIT-green)
+
 Autonomous payment engine for AI agents on Stellar. An MCP-enabled agent (Claude Desktop, OpenClaw, anything that speaks Model Context Protocol) discovers paid APIs, pays them in USDC on Stellar testnet, and reads the response. Every spend passes through an on-chain Soroban policy contract before any USDC moves.
 
-## What it does
+## 🔄 What it does
 
 A user asks Claude "build me a market intelligence report on XLM". Claude calls `autopilot_pay_and_fetch`. The autopay engine HEAD-probes the URL, detects the protocol (x402 or MPP), parses the price from the 402 headers, simulates the wallet-policy contract on Soroban (fail-closed if RPC is down), pays via the appropriate SDK, records the spend on-chain with a nonce, and returns the JSON body to Claude. Some of those endpoints are themselves agents that buy data from other agents before answering, so a single $0.005 request can fan out into three or four real on-chain transfers across distinct wallets.
 
-## Key facts
+## 📊 Key facts
 
 - 6 paid endpoints across 4 service wallets, plus 1 main wallet that drives them
 - 2 Soroban contracts (wallet-policy with 8 functions, trust-registry v3 with 10 functions)
@@ -18,7 +20,7 @@ A user asks Claude "build me a market intelligence report on XLM". Claude calls 
 - Zero-dependency CLI dashboard for terminal use
 - Background market monitor in the Market Intelligence agent that buys fresh prices every 90 seconds without human intervention
 
-## Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
@@ -60,7 +62,7 @@ flowchart TD
     WEB -->|polls every 20s| HZ["Horizon REST"]
 ```
 
-## How it works
+## ⚙️ How it works
 
 1. The agent calls `autopilot_pay_and_fetch(url)` over MCP stdio
 2. `validateUrl` blocks SSRF (file://, private IPs, localhost unless `ALLOW_HTTP=true`)
@@ -75,7 +77,7 @@ flowchart TD
 
 If the payment settled but the API errored after, `recordSpend` runs anyway. Money already moved on-chain, so the policy contract has to know.
 
-## Quick start: developer setup
+## 🚀 Quick start: developer setup
 
 This path runs the four local agents, the wallet-policy contract, the WS server, and the Vite dashboard. Requires a funded testnet wallet.
 
@@ -123,7 +125,7 @@ npm run dev
 # 11. Configure Claude Desktop MCP (see "MCP configuration" below)
 ```
 
-## Quick start: community user (MCP only)
+## 🚀 Quick start: community user (MCP only)
 
 No local agents. Discover and pay external services that other developers registered on the shared trust-registry, plus xlm402.com testnet endpoints.
 
@@ -162,7 +164,7 @@ The trust-registry is a shared on-chain directory. When any developer registers 
 
 **Why two setup paths?** The wallet-policy contract uses `owner.require_auth()` for `record_spend`, `record_denied`, `update_policy`, and `set_allowlist`. Only the deployer's key can authorize spending writes against their policy, so each user must deploy their own. The trust-registry contract is shared because reads and writes are not gated to a single owner.
 
-## CLI dashboard
+## 💻 CLI dashboard
 
 `npm run dev` launches `scripts/cli-dashboard.ts` (472 lines, zero new dependencies). It replaces the noisy `concurrently` output with a fixed-layout ANSI terminal display that updates every second:
 
@@ -175,7 +177,7 @@ Press `q` or Ctrl+C to quit. The dashboard kills entire process groups (negative
 
 The MCP server is **not** spawned by the CLI dashboard. It uses stdio transport and is launched by Claude Desktop on demand.
 
-## Web dashboard (contract-explorer)
+## 🖥️ Web dashboard (contract-explorer)
 
 The contract-explorer is a standalone React Flow network graph that visualizes every wallet, service, and contract in real time. It runs on port 5180. 48 TS/TSX files, 7001 lines, with its own `package.json` outside the npm workspace.
 
@@ -196,7 +198,7 @@ http://localhost:5180/?policy=C...&registry=C...&rpc=https://...
 
 See [contract-explorer/README.md](contract-explorer/README.md) for the full architecture.
 
-## MCP configuration
+## 🔧 MCP configuration
 
 Add to your Claude Desktop MCP settings:
 
@@ -221,7 +223,7 @@ Add to your Claude Desktop MCP settings:
 }
 ```
 
-## MCP tools
+## 🛠️ MCP tools
 
 | Tool | Description |
 |------|-------------|
@@ -234,11 +236,11 @@ Add to your Claude Desktop MCP settings:
 
 The capability list is fetched from the trust-registry's `CapName(u32)` persistent index on every call. New capabilities (anything a service registers under, including names that did not exist when the dashboard was last redeployed) appear automatically without code changes.
 
-## OpenClaw integration
+## 🔌 OpenClaw integration
 
 The same MCP server powers OpenClaw skills. See [openclaw-skill/](openclaw-skill/) for the skill manifest, MCP config snippet, and install instructions. Once installed, an OpenClaw agent on WhatsApp, Telegram, Discord, Slack, or any other supported channel gets the same six tools as Claude Desktop.
 
-## Services
+## 🌐 Services
 
 | Service file | Endpoint | Port | Protocol | Price | Capability | Wallet env |
 |--------------|----------|------|----------|-------|------------|-----------|
@@ -260,7 +262,7 @@ LLM priority for the three agents that produce briefings/reports/analyses (News 
 
 The Market Intelligence agent runs an autonomous monitor on a 90-second interval (after a 30-second warmup) that buys fresh crypto prices and caches them for 120 seconds. The cache absorbs the cost of the prices sub-purchase for any `/market-report` request that lands while the cache is fresh.
 
-## Project structure
+## 📂 Project structure
 
 ```
 stelos/
@@ -305,7 +307,7 @@ stelos/
     deploy-trust-registry.sh                     build + deploy + initialize
 ```
 
-## Tech stack
+## 📦 Tech stack
 
 | Component | Technology | Version |
 |-----------|-----------|---------|
@@ -325,7 +327,7 @@ stelos/
 | CLI dashboard | Node built-ins + ws | zero new deps |
 | Network | Stellar testnet | soroban-testnet.stellar.org |
 
-## Contracts on testnet
+## 📜 Contracts on testnet
 
 | Contract | Ownership | How to get one |
 |----------|-----------|----------------|
@@ -335,7 +337,7 @@ stelos/
 
 The trust-registry initialization takes `(admin, usdc_addr)`. The deploy script (`scripts/deploy-trust-registry.sh`) wires both. The wallet-policy initialization takes `(owner, daily_limit, per_tx_limit, rate_limit)`. Defaults baked into the code (`src/config.ts`): $0.50/day (5,000,000 stroops), $0.01/tx (100,000 stroops), 20 req/min. The `.env.example` template ships with a more permissive set ($0.10/tx, 60 req/min) so demos do not bump into rate limits.
 
-## Environment variables
+## 📋 Environment variables
 
 The full list lives in [.env.example](.env.example). Required vs optional:
 
@@ -374,7 +376,7 @@ The full list lives in [.env.example](.env.example). Required vs optional:
 | `NEWS_CLAUDE_MODEL` | no | `claude-sonnet-4-6` | Model for `claude -p` in news-api.ts |
 | `MARKET_CLAUDE_MODEL` | no | `claude-sonnet-4-6` | Model for `claude -p` in stellar-data-api.ts |
 
-## Edge cases handled
+## 🛡️ Edge cases handled
 
 | # | Edge case | Solution | Where |
 |---|-----------|----------|-------|
@@ -409,7 +411,7 @@ The full list lives in [.env.example](.env.example). Required vs optional:
 | 29 | `.env` file world-readable | `setup-service-wallets.ts` calls `chmodSync(ENV_PATH, 0o600)` after every write; warns if chmod fails | `scripts/setup-service-wallets.ts:255` |
 | 30 | `handleSetPolicy` negative-value lockout | Local validation rejects negative `daily_limit_stroops`, `per_tx_limit_stroops`, and non-integer / out-of-range `rate_limit` before signing the TX | `mcp-server/src/index.ts:471` |
 
-## What makes this different
+## 💡 What makes this different
 
 Most x402 demos boil down to one fetch call with a hardcoded URL. This project goes further:
 
@@ -425,7 +427,7 @@ Most x402 demos boil down to one fetch call with a hardcoded URL. This project g
 
 **Tradeoffs.** Soroban testnet writes take 5 to 15 seconds. The mutex serializes all payments through a single lease, so concurrent requests queue up linearly. Each seller service gets its own distinct wallet (auto-provisioned on first run), which means every payment is a real transfer that costs a network fee. The `claude -p` headless mode can conflict with an active Claude Code session sharing the same OAuth keychain. Heartbeats fire every 4 minutes per service, which means each service writes to Soroban roughly 360 times per 24 hours and burns network fee XLM.
 
-## Documentation
+## 📄 Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - system design, payment flows, contract internals, security model
 - [contract-explorer/README.md](contract-explorer/README.md) - web dashboard architecture, stores, hooks, polling intervals
@@ -434,6 +436,6 @@ Most x402 demos boil down to one fetch call with a hardcoded URL. This project g
 - [skill/SKILL.md](skill/SKILL.md) - original short skill definition
 - [.env.example](.env.example) - every environment variable with defaults
 
-## License
+## ⚖️ License
 
 MIT. See [LICENSE](LICENSE).

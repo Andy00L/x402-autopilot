@@ -1,10 +1,12 @@
 # Architecture
 
-## System overview
+![Soroban](https://img.shields.io/badge/Soroban-SDK%2022-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6) ![React](https://img.shields.io/badge/React-19.2-61DAFB) ![x402](https://img.shields.io/badge/x402-Coinbase-purple) ![MPP](https://img.shields.io/badge/MPP-Stripe-635BFF) ![Stellar](https://img.shields.io/badge/Stellar-Testnet-00B4E6) ![MCP](https://img.shields.io/badge/MCP-Claude%20Desktop-orange) ![License: MIT](https://img.shields.io/badge/License-MIT-green)
+
+## 🔭 System overview
 
 x402 Autopilot is an autonomous payment engine for AI agents on Stellar. Claude (or any MCP-enabled agent) connects via stdio, discovers paid APIs through a 3-tier pipeline (Bazaar, on-chain trust registry, xlm402.com), pays with USDC micropayments, and tracks spending against an on-chain Soroban policy contract. Three of the four built-in data sources are themselves agents: they earn money from incoming requests and spend their own USDC to buy raw data from other agents before responding. A CLI dashboard manages the local process tree. A web dashboard (contract-explorer) renders a React Flow network graph with animated payment flows.
 
-## Component diagram
+## 🏗️ Component diagram
 
 ```mermaid
 flowchart TD
@@ -103,7 +105,7 @@ flowchart TD
     CLI -->|spawns| DASH
 ```
 
-## Payment flow: x402
+## 💳 Payment flow: x402
 
 ```mermaid
 sequenceDiagram
@@ -155,7 +157,7 @@ sequenceDiagram
     MCP-->>Agent: data + structuredContent (cost, budget, tx_hash)
 ```
 
-## Payment flow: MPP charge
+## 💳 Payment flow: MPP charge
 
 ```mermaid
 sequenceDiagram
@@ -185,7 +187,7 @@ sequenceDiagram
     AP->>AP: read body, recordSpend, emit event
 ```
 
-## Payment flow: agent-to-agent
+## 🤖 Payment flow: agent-to-agent
 
 The Analyst agent has its own keypair (`ANALYST_PRIVATE_KEY`/`ANALYST_PUBLIC_KEY`). It earns USDC from `/analyze` calls and spends USDC to buy raw data from the Crypto Price Oracle and the News service. Same code pattern is used in News Intelligence (buys prices) and Market Intelligence (buys prices and news).
 
@@ -226,7 +228,7 @@ sequenceDiagram
 
 When the caller passes pre-fetched data in `body.data.stories`, `body.stories`, or `body.data`, the analyst skips the paid sub-purchases and goes straight to the LLM. This keeps the round-trip under Claude Desktop's 60-second MCP tool cap.
 
-## Discovery pipeline
+## 🔍 Discovery pipeline
 
 Three tiers, deduplicated by URL (registry first), cached for 2 minutes per capability key.
 
@@ -252,7 +254,7 @@ flowchart LR
 
 If any tier fails, the others still produce results. `invalidateService(url)` clears a single failing URL from every cached capability list, so the next discover call will not return it again until the cache repopulates from the live tiers.
 
-## Dynamic capability discovery
+## 🔍 Dynamic capability discovery
 
 Three of the system's read paths fetch the live capability set from the trust-registry instead of hardcoding it. The chain of trust is the same in all three: `list_capabilities(0, 100)` on the contract, fall back to a small hardcoded seed if the RPC is unreachable.
 
@@ -271,7 +273,7 @@ The contract write side that backs this is `register_service`. When a service re
 
 The MCP and dashboard fallbacks exist because a fresh deployment has zero capabilities indexed until the first service registers. Without the seed list the dashboard would render an empty registry node on first load.
 
-## Trust registry storage layout
+## 🗄️ Trust registry storage layout
 
 The trust-registry uses three Soroban storage tiers. Auto-expiry replaces the manual stale-checking pattern from earlier versions.
 
@@ -304,7 +306,7 @@ flowchart TD
 
 **Registration re-entry.** `data-sources/src/shared.ts:resolveServiceId` calls `simulateListServices` before `register_service`. If the URL is already in the live set with the same owner, it reuses the existing service ID and resumes heartbeat instead of paying another deposit and panicking on the duplicate-URL check.
 
-## Wallet policy state machine
+## ⚙️ Wallet policy state machine
 
 ```mermaid
 stateDiagram-v2
@@ -337,7 +339,7 @@ stateDiagram-v2
 
 `check_policy` returns one of seven `reason` symbols: `ok`, `over_per_tx`, `before_window`, `after_window`, `over_daily`, `rate_limited`, `bad_recv`. The TypeScript client surfaces these as `PolicyDeniedError.reason`. The MCP server reports them as a soft failure (no `isError` flag) so Claude can relay the reason without treating the tool as broken.
 
-## Wallet policy contract
+## 📜 Wallet policy contract
 
 `contracts/wallet-policy/src/lib.rs` (353 lines, 8 public functions, all amounts in i128 stroops).
 
@@ -361,7 +363,7 @@ The `day_key` is `env.ledger().timestamp() / 86400`, so a new UTC day starts a f
 
 **Persistent TTL.** `record_spend` calls `extend_ttl(50_000, 100_000)` on every persistent key it touches: `Spend(day_key)`, `Nonce(symbol)`, `TotalSpent`, and `TxCount`. Without these explicit extensions, persistent storage on testnet defaults to ~4096 ledgers (~5.7 hours). The daily counter would silently reset mid-day after a quiet period and the owner could overspend the daily limit. Lifetime totals would also expire and reset to zero. The TTL extension ensures every key lives for at least the next ~5.7 days.
 
-## Trust registry contract (v3)
+## 📜 Trust registry contract (v3)
 
 `contracts/trust-registry/src/lib.rs` (561 lines, 10 public functions).
 
@@ -386,7 +388,7 @@ The instance-storage cost of the index is exactly 4 bytes (`CapCount: u32`). The
 
 `list_capabilities(start, limit)` returns up to `limit` capability symbols starting at `start`. Clients call it with `(0, 100)` and paginate when the returned `Vec` is shorter than `limit`. Every read extends the TTL on the touched `CapName(i)` entries (50_000 / 100_000) so an actively polled registry never loses capability names. This is how `mcp-server` and the contract-explorer dashboard discover new service categories without code changes.
 
-## CLI dashboard
+## 💻 CLI dashboard
 
 `scripts/cli-dashboard.ts` (472 lines, zero new dependencies). Replaces `concurrently` as the process manager for `npm run dev`. Pure ANSI escape codes for rendering.
 
@@ -415,7 +417,7 @@ The instance-storage cost of the index is exactly 4 bytes (`CapCount: u32`). The
 - Each child's stdout/stderr writes to `logs/YYYY-MM-DD_HH-mm-ss.log`
 - ANSI codes stripped from `parseOutput` (so URL detection still works), but the raw line is preserved in the log
 
-## Web dashboard (contract-explorer)
+## 🖥️ Web dashboard (contract-explorer)
 
 `contract-explorer/` (48 TS/TSX files, 7001 lines, separate `package.json` outside the npm workspace). Standalone React Flow network graph that visualizes wallets, services, and contracts in real time.
 
@@ -486,7 +488,7 @@ The wallet list is persisted to `localStorage` under `x402-autopilot.wallets.v1`
 
 See [contract-explorer/README.md](contract-explorer/README.md) for the full directory layout.
 
-## File breakdown
+## 📁 File breakdown
 
 ```
 contracts/
@@ -575,7 +577,7 @@ scripts/                            1598 TS lines + 2 bash files
   deploy-trust-registry.sh                build + deploy + initialize
 ```
 
-## Security model
+## 🛡️ Security model
 
 | Threat | Mitigation | Location |
 |--------|-----------|----------|
@@ -602,7 +604,7 @@ scripts/                            1598 TS lines + 2 bash files
 | Leftover ports on restart | `killPorts()` runs `fuser -k` on ports 4001-4004, 5180-5182, 8080 | `scripts/cli-dashboard.ts:97` |
 | Float precision in money | BigInt stroops everywhere, `parsePriceStroops` is the only place `parseFloat` is allowed and is bounded by `Number.MAX_SAFE_INTEGER` | `src/security.ts:89` |
 
-## Dashboard events
+## 📡 Dashboard events
 
 Events broadcast over WebSocket from `ws-server.ts`. BigInt fields are serialized to strings (the JSON replacer handles this).
 
@@ -615,7 +617,7 @@ The MCP server connects as a WebSocket client to the ws-server (`ws://localhost:
 
 The core engine's `event-bus.ts` defines a wider event union (`spend:api_error`, `spend:failed`, `denied`, `discovery:updated`, `health:checked`, `registry:stale`) but the wire protocol only emits `budget:updated` and `spend:ok` from the ws-server today.
 
-## Design decisions
+## 💡 Design decisions
 
 **BigInt everywhere for money.** JavaScript Numbers lose integer precision above 2^53. USDC has 7 decimals, so $1.00 = 10,000,000 stroops, well below 2^53, but products and sums quickly overflow without BigInt. `parsePriceStroops` is the only place `parseFloat` is allowed and it has explicit bounds checks. JSON.stringify cannot serialize BigInt natively, so every WebSocket emit uses a replacer function (`(_k, v) => typeof v === "bigint" ? v.toString() : v`).
 
